@@ -17,7 +17,10 @@ def setup_game(scenario = "defend_the_center"):
   # need this so it doesn't bug out
   game.add_game_args("+vid_forcesurface 1")
   # mix in the depth buffer
-  game.set_screen_format(ScreenFormat.CRCGCBDB)
+  game.set_depth_buffer_enabled(True)
+  game.set_labels_buffer_enabled(True)
+  game.set_automap_buffer_enabled(True)
+#  game.set_screen_format(ScreenFormat.CRCGCBDB)
   game.init()
   return game
 
