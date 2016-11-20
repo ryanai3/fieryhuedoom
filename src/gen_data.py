@@ -5,6 +5,7 @@ import random
 import time
 import hashlib
 import numpy as np
+import sys
 
 # action definition
 left  = [1, 0, 0]
@@ -27,8 +28,11 @@ def setup_game(scenario = "defend_the_center"):
   game.set_automap_buffer_enabled(True)
 
   # so we can run this without an x server
-#  game.set_window_visible(False)
+  game.set_window_visible(False)
+  game.set_render_hud(False)
+  game.set_render_weapon(False) 
   game.init()
+
   return game
 
 def save_xy(img, zbuf):
@@ -39,15 +43,22 @@ def save_xy(img, zbuf):
   np.save(zbuf_fname, zbuf) 
 
 def run_and_save_episodes(game, num_episodes):
+  num_frames_arr = []
   for i in range(num_episodes):
     game.new_episode()
+    num_frames = 0
     while not game.is_episode_finished():
+      num_frames += 1
       state = game.get_state()
       img = state.screen_buffer
       zbuf = state.depth_buffer
       save_xy(img, zbuf) 
       game.make_action(random.choice(actions))
-
+    print(num_frames)
+    sys.stdout.flush()
+    num_frames_arr.append(num_frames)
+  return num_frames_arr
+    
 def hashtime():
   hash = hashlib.sha1()
   hash.update(str(time.time()) + str(random.randint(1, 100)))
@@ -55,5 +66,5 @@ def hashtime():
 
 if __name__ == "__main__":
   game = setup_game()
-  run_and_save_episodes(game, 3)
-
+  num_episodes = int(sys.argv[1].rstrip())
+  num_frames = run_and_save_episodes(game, num_episodes)
