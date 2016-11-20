@@ -4,6 +4,7 @@ import tensorflow as tf
 from tflearn.layers.conv import conv_2d as conv2d
 from tflearn.layers.conv import max_pool_2d as maxpool
 from tflearn.layers.core import fully_connected as fc
+from functools import partial
 
 def flatten(l):
   return [item for sublist in l for item in sublist]
@@ -15,10 +16,33 @@ def times(n):
 
 
 class YOLO3D():
-  def __init__(self, batch_size, width, height, channels, pgrid_size, bb_num,
-      num_classes, x_in):
+  def __init__(self, **params):
+    # params: batch_size, width, height, depth, channels,
+    #         pgrid_dims, bb_num, num_classes, x_in
+    
+    # store params as fields
+    self.__dict__.update(params)
+    
+    # generate features
+    self.features = self.generate_feature_stack(self.x_in)
 
-    x = tf.placeholder(tf.float32, shape=(batch_size, width, height, channels))
+    # generate proposals from features
+    self.proposal_grid = self.generate_proposals(self.features)
+    self.proposals = tf.reshape(
+      self.proposal_grid, 
+      [self.batch_size, self.num_grid_cells, self.outputs_per_grid_cell]
+    )
+
+    # setup coordinate system
+    self.coords = gen_coordinate_system(
+        self.width, self.height, self.depth
+    )
+
+    self.iou_loss = self.batch_iou_loss(self.proposals, self.zbufs)  
+
+  def generate_feature_stack(self, x_in):
+    x = x_in
+
     x = conv_then_pool_block({
       'convs'    : [(7, 7, 64, 2)],
       'max_pool' : [(2, 2, 2)]
@@ -65,22 +89,96 @@ class YOLO3D():
       times(2)([(3, 3, 1024)])
     )(x)
 
+    return x
+
+  def generate_proposals(self, feature_stack):
+    x = feature_stack
     x = fc(x, 4096, activation='relu') 
-    # bb_num * 6 == x, y, z, sigma_x, sigma_y, sigma_z, rot
-    outputs_per_grid_cell = ((bb_num * 7) + num_classes))
-    x = fc(x, (pgrid_size ** 2) * outputs_per_grid_cell, activation='relu')
-    x = tf.reshape(t, [7, 7, outputs_per_grid_cell])
-    
-    import pdb; pdb.set_trace()
+    # proposal = [x, y, z, sigma_x, sigma_y, sigma_z, rot]
+    self.outputs_per_grid_cell = ((self.bb_num * 7) + self.num_classes)
+    self.num_grid_cells = self.pgrid_dims[0] * self.pgrid_dims[1]
+    self.proposal_shape_per_batch =  \
+      [self.batch_size] + self.pgrid_dims + [self.outputs_per_grid_cell]
 
-  def gen_coordinate_system(self, width, height, depth):
-    x = tf.linspace(-1.0, 1.0, width)
-    y = tf.linspace(-1.0, 1.0, height)
-    z = tf.linspace(-1.0, 1.0, depth)
-    coord = tf.meshgrid(x, y, z)
-    return coord
-    
+    x = fc(
+      x, 
+      self.num_grid_cells * self.outputs_per_grid_cell,
+      activation='relu'
+    )
+    x = tf.reshape(x, self.proposal_shape_per_batch)
+    return x
 
+  def batch_iou_loss(self, batch_proposals, batch_zbufs):
+    per_example_i = tf.map_fn(
+      self.per_example_iou_loss, 
+      tf.tuple([batch_proposals, batch_zbufs]),
+      dtype=tf.float32
+    )
+    res = tf.reduce_mean(per_example_i)
+    # i have to do the following because tensorflow is stupid
+    return (res, res)
+
+  def per_example_iou_loss(self, arg_tup):
+    proposal_sets, zbuf = arg_tup
+    proposals = tf.reshape(proposal_sets, [-1, 7])
+    func = partial(self.per_proposal_intersect, zbuf=zbuf)
+    per_proposal_i = tf.map_fn(func, proposals, dtype=tf.float32)
+    return tf.reduce_sum(per_proposal_i)
+
+  def per_proposal_intersect(self, proposal, zbuf):
+    proposal_xyz = proposal[0:3]
+    proposal_sigma_xyz = proposal[3:6]
+    proposal_theta = proposal[6]
+
+    zbuf_as_one_hot = tf.one_hot(
+      zbuf,
+      self.depth,
+      on_value=True,
+      off_value=False
+    )
+    xyz_absolute = tf.boolean_mask(
+      self.coords,
+      zbuf_as_one_hot
+    )
+    xyz_relative = xyz_absolute - proposal_xyz
+
+    top = tf.pack([tf.cos(proposal_theta), tf.sin(proposal_theta)])
+    bot = tf.pack([-tf.sin(proposal_theta), tf.cos(proposal_theta)])
+    rot_mat = tf.pack([top, bot])
+
+    # change to coordinate system about the proposal
+    xz_rel = tf.pack(
+     [xyz_relative[:, 0],
+      xyz_relative[:, 2]],
+     axis=0
+    )
+
+    # rotate coordinate system with proposal's rotation
+    xz_rot = tf.matmul(rot_mat, xz_rel)
+    x_rot = xz_rot[0, :]
+    z_rot = xz_rot[1, :]
+    xyz_rot = tf.pack(
+     [x_rot, 
+      xyz_relative[:, 1],
+      z_rot],
+     axis=1
+    )
+    over_sigma = tf.div(xyz_rot, proposal_sigma_xyz)
+    squared = tf.square(over_sigma)
+    exponents = -0.5 * tf.reduce_sum(squared, 1)
+    f_xyz = tf.exp(exponents)
+    
+    intersection = tf.reduce_sum(f_xyz)
+    return intersection
+    
+def gen_coordinate_system(width, height, depth):
+  x = tf.linspace(-1.0, 1.0, width)
+  y = tf.linspace(-1.0, 1.0, height)
+  z = tf.linspace(-1.0, 1.0, depth)
+  # the indexing param is stupid - otherwise axes swap
+  coord = tf.pack(tf.meshgrid(x, y, z, indexing='ij'), axis=3)
+  return coord
+       
 def conv_block(convs_params):
   def gen_conv_block(x):
     for cp in convs_params:
@@ -110,10 +208,31 @@ def conv_then_pool_block(param_dict):
   return gen_ctp_block
 
 if __name__ == "__main__":
-  net = YOLO3D(4, 640, 480, 3, None)
-  co = net.gen_coordinate_system()
+  params = {
+    'batch_size': 4,
+    'width': 640,
+    'height': 480,
+    'depth': 256,
+    'channels': 3,
+    'pgrid_dims': [7, 7],
+    'bb_num': 2,
+    'num_classes': 0, # breaks with n_classes > 0 right now
+  }
+
+  params['x_in'] = tf.placeholder(
+    tf.float32, 
+    shape = (params[k] for k in ('batch_size', 'width', 'height', 'channels'))
+  )
+  params['zbufs'] = tf.placeholder(
+    tf.int32,
+    shape = (params[k] for k in ('batch_size', 'width', 'height'))
+  )
+
+  net = YOLO3D(**params)
+  co = gen_coordinate_system(
+    **{k: params[k] for k in ('width', 'height', 'depth')}
+  )
   import pdb; pdb.set_trace()
   print(32)
   print(32)
-  
 
