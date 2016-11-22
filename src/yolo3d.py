@@ -24,9 +24,16 @@ class YOLO3D():
     self.__dict__.update(params)
     
     # generate features
-    self.features = self.generate_feature_stack(self.x_in)
+    self.sensible_x_in = tf.transpose(self.x_in, [0, 3, 2, 1])
+    self.sensible_x_in = tf.cast(self.sensible_x_in, tf.float32)
+
+    self.sensible_zbufs = tf.transpose(self.zbufs, [0, 2, 1])
+    self.sensible_zbufs = tf.cast(self.sensible_zbufs, tf.int32)
+
+    self.features = self.generate_feature_stack(self.sensible_x_in)
 
     # generate proposals from features
+    import pdb; pdb.set_trace()
     self.proposal_grid = self.generate_proposals(self.features)
     self.proposals = tf.reshape(
       self.proposal_grid, 
@@ -37,11 +44,12 @@ class YOLO3D():
     self.coords = gen_coordinate_system(
         self.width, self.height, self.depth
     )
-    self.iou_loss = -self.batch_iou(self.proposals, self.zbufs)  
+    self.iou_loss = -self.batch_iou(self.proposals, self.sensible_zbufs)  
+
 
   def generate_feature_stack(self, x_in):
     x = x_in
-
+    import pdb; pdb.set_trace()
     x = conv_then_pool_block({
       'convs'    : [(7, 7, 64, 2)],
       'max_pool' : [(2, 2, 2)]
@@ -196,11 +204,8 @@ def conv_then_pool_block(param_dict):
   convs_params = param_dict['convs']
   def gen_ctp_block(x):
     x = conv_block(convs_params)(x)
-    try:
-      mp = param_dict['max_pool']
-      x = max_pool_2d(x, [mp[0], mp[1]], [mp[2], mp[2]], padding='same')
-    except:
-      pass
+    for mp in param_dict['max_pool']:
+      x = maxpool(x, [mp[0], mp[1]], [mp[2], mp[2]], padding='same')
     return x
   return gen_ctp_block
 
@@ -217,18 +222,19 @@ if __name__ == "__main__":
     'height': 480,
     'depth': 256,
     'channels': 3,
-    'pgrid_dims': [7, 7],
+    'pgrid_dims': [10, 8],
     'bb_num': 2,
     'num_classes': 0, # breaks with n_classes > 0 right now
   }
 
   params['x_in'] = tf.placeholder(
-    tf.float32, 
-    shape = (params[k] for k in ('batch_size', 'width', 'height', 'channels'))
+    tf.uint8, 
+    shape = (params[k] for k in ('batch_size', 'channels', 'height', 'width'))
   )
+
   params['zbufs'] = tf.placeholder(
-    tf.int32,
-    shape = (params[k] for k in ('batch_size', 'width', 'height'))
+    tf.uint8,
+    shape = (params[k] for k in ('batch_size', 'height', 'width'))
   )
 
   net = YOLO3D(**params)
@@ -238,9 +244,15 @@ if __name__ == "__main__":
     params['zbufs']: obs_data_loader("zbuf")
   }
 
+  import numpy as np
+
+  data_dir = "/data/r9k/obs_data"
+  feed_dict = {params['x_in']: [np.load(data_dir + "/img/4b20069dba.npy")],
+      params['zbufs']: [np.load(data_dir + "/zbuf/4b20069dba.npy")]}
+
+  import pdb; pdb.set_trace()
+
 
   train_op = TrainOp(net.iou_loss, Adam().get_tensor(), batch_size = params['batch_size'])
   trainer = Trainer([train_op], tensorboard_verbose=0)
   trainer.fit(feed_dicts=[feed_dict], n_epoch=10)
-
-
