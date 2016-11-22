@@ -5,6 +5,7 @@ from tflearn.layers.conv import conv_2d as conv2d
 from tflearn.layers.conv import max_pool_2d as maxpool
 from tflearn.layers.core import fully_connected as fc
 from functools import partial
+from keras.layers.core import RepeatVector
 
 def flatten(l):
   return [item for sublist in l for item in sublist]
@@ -28,12 +29,13 @@ class YOLO3D():
     self.sensible_x_in = tf.cast(self.sensible_x_in, tf.float32)
 
     self.sensible_zbufs = tf.transpose(self.zbufs, [0, 2, 1])
+    self.flt_zbufs = tf.cast(self.sensible_zbufs, tf.float32)
     self.sensible_zbufs = tf.cast(self.sensible_zbufs, tf.int32)
+
 
     self.features = self.generate_feature_stack(self.sensible_x_in)
 
     # generate proposals from features
-    import pdb; pdb.set_trace()
     self.proposal_grid = self.generate_proposals(self.features)
     self.proposals = tf.reshape(
       self.proposal_grid, 
@@ -41,15 +43,18 @@ class YOLO3D():
     )
 
     # setup coordinate system
-    self.coords = gen_coordinate_system(
-        self.width, self.height, self.depth
-    )
+    with tf.variable_scope("topline"):
+      self.coords = gen_coordinate_system(
+          self.width, self.height, self.depth
+      )
     self.iou_loss = -self.batch_iou(self.proposals, self.sensible_zbufs)  
 
+#    self.err = tf.reduce_sum(tf.square(self.pred_z - self.flt_zbufs))
+#    opt = tf.train.AdagradOptimizer(learning_rate=0.001)
+#    self.minimizer = opt.minimize(self.err)
 
   def generate_feature_stack(self, x_in):
     x = x_in
-    import pdb; pdb.set_trace()
     x = conv_then_pool_block({
       'convs'    : [(7, 7, 64, 2)],
       'max_pool' : [(2, 2, 2)]
@@ -92,9 +97,12 @@ class YOLO3D():
       ]
     )(x)
 
-    x = conv_block(
-      times(2)([(3, 3, 1024)])
-    )(x)
+    x = conv_block([(3, 3, 1024)])(x)
+    x = conv_block([(3, 3, 512)])(x)
+
+#    x = conv_block(
+#      times(2)([(3, 3, 1024)])
+#    )(x)
 
     return x
 
@@ -125,12 +133,19 @@ class YOLO3D():
 
   def per_example_iou(self, arg_tup):
     proposal_sets, zbuf = arg_tup
+    zbuf_r_n = self.num_grid_cells * self.bb_num
+    zbuf_r = tf.transpose(RepeatVector(zbuf_r_n)(zbuf), [1, 0, 2])
     proposals = tf.reshape(proposal_sets, [-1, 7])
-    func = partial(self.per_proposal_intersect, zbuf=zbuf)
-    per_proposal_i = tf.map_fn(func, proposals, dtype=tf.float32)
-    return tf.reduce_sum(per_proposal_i)
+#    func = partial(self.per_proposal_intersect, zbuf=zbuf)
+    per_proposal_i = tf.map_fn(
+      self.per_proposal_intersect,
+      tf.tuple([proposals, zbuf_r]),
+      dtype=tf.float32
+    )
+    return tf.reduce_mean(per_proposal_i)
 
-  def per_proposal_intersect(self, proposal, zbuf):
+  def per_proposal_intersect(self, arg_tup):
+    proposal, zbuf = arg_tup
     proposal_xyz = proposal[0:3]
     proposal_sigma_xyz = proposal[3:6]
     proposal_theta = proposal[6]
@@ -141,14 +156,16 @@ class YOLO3D():
       on_value=True,
       off_value=False
     )
+
     xyz_absolute = tf.boolean_mask(
       self.coords,
+#      coords,
       zbuf_as_one_hot
     )
     xyz_relative = xyz_absolute - proposal_xyz
 
-    top = tf.pack([tf.cos(proposal_theta), tf.sin(proposal_theta)])
-    bot = tf.pack([-tf.sin(proposal_theta), tf.cos(proposal_theta)])
+    top = tf.pack([tf.cos(proposal_theta), -tf.sin(proposal_theta)])
+    bot = tf.pack([tf.sin(proposal_theta), tf.cos(proposal_theta)])
     rot_mat = tf.pack([top, bot])
 
     # change to coordinate system about the proposal
@@ -168,12 +185,11 @@ class YOLO3D():
       z_rot],
      axis=1
     )
-    over_sigma = tf.div(xyz_rot, proposal_sigma_xyz)
+    over_sigma = tf.div(xyz_rot, proposal_sigma_xyz + tf.constant(1e-7))
     squared = tf.square(over_sigma)
-    exponents = -0.5 * tf.reduce_sum(squared, 1)
+    exponents = tf.mul(-0.5, tf.reduce_sum(squared, 1))
     f_xyz = tf.exp(exponents)
-    
-    intersection = tf.reduce_sum(f_xyz)
+    intersection = tf.Print(tf.reduce_sum(f_xyz), [s])
     return intersection
     
 def gen_coordinate_system(width, height, depth):
@@ -211,7 +227,7 @@ def conv_then_pool_block(param_dict):
 
 import tflearn
 from tflearn.helpers.trainer import TrainOp, Trainer
-from tflearn.optimizers import Adam
+#from tflearn.optimizers import Adam, SGD, AdaGrad
 
 from dataloader import obs_data_loader
 
@@ -239,20 +255,38 @@ if __name__ == "__main__":
 
   net = YOLO3D(**params)
 
+  def ret_feed_dict(i):
+    return {
+        params['x_in']: obs_data_loader("img")[i: i + 1],
+        params['zbufs']: obs_data_loader("zbuf")[i: i + 1]
+    }
   feed_dict = {
-    params['x_in']: obs_data_loader("img"), 
-    params['zbufs']: obs_data_loader("zbuf")
+      params['x_in']: obs_data_loader("img")[0:params['batch_size']],
+      params['zbufs']: obs_data_loader("zbuf")[0:params['batch_size']]
   }
 
   import numpy as np
 
   data_dir = "/data/r9k/obs_data"
-  feed_dict = {params['x_in']: [np.load(data_dir + "/img/4b20069dba.npy")],
-      params['zbufs']: [np.load(data_dir + "/zbuf/4b20069dba.npy")]}
+#  feed_dict = {params['x_in']: [np.load(data_dir + "/img/4b20069dba.npy")],
+#      params['zbufs']: [np.load(data_dir + "/zbuf/4b20069dba.npy")]}
+  fetches = [net.iou_loss]
+  sess = tf.Session()
+  print("built session!")
+  sess.run(tf.initialize_all_variables())
+  print("done initializing!")
+#  import pdb; pdb.set_trace()
+  for i in range(100):
+    proposals = sess.run(fetches, ret_feed_dict(i))
+    import pdb; pdb.set_trace()
+    print(i * params['batch_size'])
 
-  import pdb; pdb.set_trace()
-
-
-  train_op = TrainOp(net.iou_loss, Adam().get_tensor(), batch_size = params['batch_size'])
-  trainer = Trainer([train_op], tensorboard_verbose=0)
-  trainer.fit(feed_dicts=[feed_dict], n_epoch=10)
+#  import pdb; pdb.set_trace()
+#  opt = SGD()
+#  opt = Adam()
+#  opt = tf.train.AdagradOptimizer(learning_rate = 0.001)
+#  import pdb; pdb.set_trace()
+#  train_op = TrainOp(net.iou_loss, opt, batch_size = params['batch_size'])
+#  trainer = Trainer([train_op], tensorboard_verbose=0)
+#  trainer.fit(feed_dicts=[feed_dict], n_epoch=10)
+  
