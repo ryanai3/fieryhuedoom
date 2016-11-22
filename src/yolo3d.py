@@ -38,7 +38,7 @@ class YOLO3D():
         self.width, self.height, self.depth
     )
 
-    self.iou_loss = self.batch_iou_loss(self.proposals, self.zbufs)  
+    self.iou_loss = -self.batch_iou(self.proposals, self.zbufs)  
 
   def generate_feature_stack(self, x_in):
     x = x_in
@@ -108,9 +108,9 @@ class YOLO3D():
     x = tf.reshape(x, self.proposal_shape_per_batch)
     return x
 
-  def batch_iou_loss(self, batch_proposals, batch_zbufs):
+  def batch_iou(self, batch_proposals, batch_zbufs):
     per_example_i = tf.map_fn(
-      self.per_example_iou_loss, 
+      self.per_example_iou, 
       tf.tuple([batch_proposals, batch_zbufs]),
       dtype=tf.float32
     )
@@ -118,7 +118,7 @@ class YOLO3D():
     # i have to do the following because tensorflow is stupid
     return (res, res)
 
-  def per_example_iou_loss(self, arg_tup):
+  def per_example_iou(self, arg_tup):
     proposal_sets, zbuf = arg_tup
     proposals = tf.reshape(proposal_sets, [-1, 7])
     func = partial(self.per_proposal_intersect, zbuf=zbuf)
@@ -207,6 +207,10 @@ def conv_then_pool_block(param_dict):
     return x
   return gen_ctp_block
 
+import tflearn
+from tflearn.helpers.trainer import TrainOp, Trainer
+from tflearn.optimizers import Adam
+
 if __name__ == "__main__":
   params = {
     'batch_size': 4,
@@ -229,10 +233,12 @@ if __name__ == "__main__":
   )
 
   net = YOLO3D(**params)
-  co = gen_coordinate_system(
-    **{k: params[k] for k in ('width', 'height', 'depth')}
-  )
-  import pdb; pdb.set_trace()
-  print(32)
-  print(32)
+
+  feed_dict = {params['x_in']: , {params['zbufs']: }
+
+
+  train_op = TrainOp(net.iou_loss, Adam().get_tensor(), batch_size = params['batch_size'])
+  trainer = Trainer([train_op], tensorboard_verbose=0)
+  trainer.fit(feed_dicts=[feed_dict], n_epoch=10)
+
 
