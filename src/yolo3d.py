@@ -37,7 +37,6 @@ class YOLO3D():
     self.coords = gen_coordinate_system(
         self.width, self.height, self.depth
     )
-
     self.iou_loss = -self.batch_iou(self.proposals, self.zbufs)  
 
   def generate_feature_stack(self, x_in):
@@ -114,9 +113,7 @@ class YOLO3D():
       tf.tuple([batch_proposals, batch_zbufs]),
       dtype=tf.float32
     )
-    res = tf.reduce_mean(per_example_i)
-    # i have to do the following because tensorflow is stupid
-    return (res, res)
+    return tf.reduce_mean(per_example_i)
 
   def per_example_iou(self, arg_tup):
     proposal_sets, zbuf = arg_tup
@@ -211,9 +208,11 @@ import tflearn
 from tflearn.helpers.trainer import TrainOp, Trainer
 from tflearn.optimizers import Adam
 
+from dataloader import obs_data_loader
+
 if __name__ == "__main__":
   params = {
-    'batch_size': 4,
+    'batch_size': 1,
     'width': 640,
     'height': 480,
     'depth': 256,
@@ -234,7 +233,10 @@ if __name__ == "__main__":
 
   net = YOLO3D(**params)
 
-  feed_dict = {params['x_in']: , {params['zbufs']: }
+  feed_dict = {
+    params['x_in']: obs_data_loader("img"), 
+    params['zbufs']: obs_data_loader("zbuf")
+  }
 
 
   train_op = TrainOp(net.iou_loss, Adam().get_tensor(), batch_size = params['batch_size'])
