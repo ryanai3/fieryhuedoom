@@ -16,6 +16,19 @@ actions = [shoot, left, right]
 
 data_dir = "/data/r9k/obs_data/"
 
+object_id_map = {}
+missing = set([])
+
+def load_doomitems(path='/usr/lib/python3.5/site-packages/doom_py/src/vizdoom/wadsrc/static/mapinfo/doomitems.txt'):
+  di_file = open(path)
+  i = 0 
+  for line in di_file:
+    items = line.strip().split(' ')
+    if len(items) == 3:
+      object_id_map[items[2]] = i
+      i += 1
+  object_id_map['Blood'] = i
+
 # setup a game to generate simple data for observation model
 def setup_game(scenario = "defend_the_center"):
   game = DoomGame()
@@ -23,10 +36,17 @@ def setup_game(scenario = "defend_the_center"):
   # need this so it doesn't bug out
   game.add_game_args("+vid_forcesurface 1")
   # mix in the depth buffer and enable other buffers in case we want them
-  # This screen format is cv2 friendly, default isn't. 
+  # This screen format is cv2 friendly, defa/usr/lib/python3.5/site-packages/doom_py/src/vizdoom/wadsrc/static/mapinfo/ult isn't. 
   game.set_screen_format(ScreenFormat.RGB24)
   game.set_depth_buffer_enabled(True)
+
   game.set_labels_buffer_enabled(True)
+  import pdb; pdb.set_trace()
+  #game.clear_available_game_variables()
+  #game.add_available_game_variable(GameVariable.POSITION_X)
+  #game.add_available_game_variable(GameVariable.POSITION_Y)
+  #game.add_available_game_variable(GameVariable.POSITION_Z)
+  
   game.set_automap_buffer_enabled(True)
   game.set_automap_mode(AutomapMode.OBJECTS_WITH_SIZE) 
 
@@ -34,6 +54,7 @@ def setup_game(scenario = "defend_the_center"):
   game.set_window_visible(False)
   game.set_render_hud(False)
   game.set_render_weapon(False)
+  game.set_render_particles(False)
 
   # so we can run this without an x server
   # game.set_window_visible(False)
@@ -41,16 +62,12 @@ def setup_game(scenario = "defend_the_center"):
 
   return game
 
-def save_dat(img, zbuf, bbs):
+def save_dat(to_save):
   hash_str = str(hashtime())
-  img_fname = data_dir + "img/{0}".format(hash_str)
-  zbuf_fname = data_dir + "zbuf/{0}".format(hash_str)
-  modes = ['img', 'zbuf', 'bbs']
-  img_fname, zbuf_fname, bbs_fname =  \
-    [data_dir + "{0}/{1}".format(mode, hash_str) for mode in modes]
-  np.save(img_fname, img)
-  np.save(zbuf_fname, zbuf) 
-  np.save(bbs_fname, bbs)
+
+  for data_name, data in to_save.iteritems():
+    np.save(data_dir + "{0}/{1}".format(data_name, hash_str), data)
+
 
 def run_and_save_episodes(game, num_episodes):
   num_frames_arr = []
@@ -62,23 +79,41 @@ def run_and_save_episodes(game, num_episodes):
       state = game.get_state()
       img = state.screen_buffer
       zbuf = state.depth_buffer
-      labels = state.labels_buffer
-      rects = np.array([get_bb(labels, value) for value in np.unique(labels)])
-      save_dat(img, zbuf, rects) 
-#      class_map = {} # TODO: make this from state.labels
+      automap = state.automap_buffer
+      labels_buf = state.labels_buffer
+      unique_vals = np.unique(labels_buf)
+      rects = np.array([get_bb(labels_buf, value) for value in unique_vals])
+      obj_ids = []
+      for uv in unique_vals:
+	for l in state.labels:
+	  if l.value == uv:
+            name = l.object_name
+	    obj_ids.append(object_id_map[l.object_name])
+      #import pdb; pdb.set_trace()
+            
+      to_save = {
+        'img': img,
+        'zbuf': zbuf,
+        'bbs': rects,
+	'automap': automap,
+	'obj_ids': obj_ids
+      }
+
+      save_dat(to_save)
       game.make_action(random.choice(actions))
     print(num_frames)
     sys.stdout.flush()
     num_frames_arr.append(num_frames)
+  print missing
   return num_frames_arr
     
 def get_bb(buf, value):
   y, x = np.where(buf == value)
   x_min, x_max = np.min(x), np.max(x)
-  y_min, y_max = np.min(y), np.min(y)
+  y_min, y_max = np.min(y), np.max(y)
   return np.array(
     [[x_min, y_min],
-     [y_min, y_max]]
+     [x_max, y_max]]
   )
 
 def hashtime():
@@ -88,5 +123,6 @@ def hashtime():
 
 if __name__ == "__main__":
   game = setup_game()
+  load_doomitems()
   num_episodes = int(sys.argv[1].rstrip())
   num_frames = run_and_save_episodes(game, num_episodes)
