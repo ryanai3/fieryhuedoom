@@ -47,11 +47,13 @@ class YOLO3D():
       self.coords = gen_coordinate_system(
           self.width, self.height, self.depth
       )
-    self.iou_loss = -self.batch_iou(self.proposals, self.sensible_zbufs)  
+    self.iou_loss = self.batch_iou(self.proposals, self.sensible_zbufs)  
 
-#    self.err = tf.reduce_sum(tf.square(self.pred_z - self.flt_zbufs))
-#    opt = tf.train.AdagradOptimizer(learning_rate=0.001)
-#    self.minimizer = opt.minimize(self.err)
+
+    opt = tf.train.AdamOptimizer(learning_rate=0.0001) #(learning_rate=0.0005)
+    
+#    opt = tf.train.GradientDescentOptimizer(learning_rate=100)
+    self.minimizer = opt.minimize(self.iou_loss)
 
   def generate_feature_stack(self, x_in):
     x = x_in
@@ -108,7 +110,7 @@ class YOLO3D():
 
   def generate_proposals(self, feature_stack):
     x = feature_stack
-    x = fc(x, 4096, activation='relu') 
+    x = fc(x, 2048, activation='relu') 
     # proposal = [x, y, z, sigma_x, sigma_y, sigma_z, rot]
     self.outputs_per_grid_cell = ((self.bb_num * 7) + self.num_classes)
     self.num_grid_cells = self.pgrid_dims[0] * self.pgrid_dims[1]
@@ -137,60 +139,48 @@ class YOLO3D():
     zbuf_r = tf.transpose(RepeatVector(zbuf_r_n)(zbuf), [1, 0, 2])
     proposals = tf.reshape(proposal_sets, [-1, 7])
 #    func = partial(self.per_proposal_intersect, zbuf=zbuf)
-    per_proposal_i = tf.map_fn(
-      self.per_proposal_intersect,
-      tf.tuple([proposals, zbuf_r]),
+    proposal_zbufs = tf.map_fn(
+      self.proposal2paddedbuf,
+      proposals,
       dtype=tf.float32
     )
-    return tf.reduce_mean(per_proposal_i)
+    min_zbuf = tf.reduce_max(proposal_zbufs, 0)
+    flt_zbuf = tf.cast(zbuf, tf.float32)
+    sqrdiff = tf.square(tf.sub(min_zbuf, flt_zbuf))
+    return tf.reduce_mean(sqrdiff)
 
-  def per_proposal_intersect(self, arg_tup):
-    proposal, zbuf = arg_tup
-    proposal_xyz = proposal[0:3]
-    proposal_sigma_xyz = proposal[3:6]
-    proposal_theta = proposal[6]
-
-    zbuf_as_one_hot = tf.one_hot(
-      zbuf,
-      self.depth,
-      on_value=True,
-      off_value=False
+  def proposal2paddedbuf(self, proposal):
+    px = proposal[0]
+    py = proposal[1]
+    pz = proposal[2]
+    pfw = proposal[3]
+    pfh = proposal[4]
+    pfz = proposal[5] # ignored
+    rot = proposal[6] # ignored
+    fx = tf.cast(tf.maximum(tf.minimum(tf.floor(px), self.width), 0.0), tf.int32)
+    fy = tf.cast(tf.maximum(tf.minimum(tf.floor(py), self.height), 0.0), tf.int32)
+#    fx = tf.cast(tf.floor(tf.sigmoid(px) * self.width), tf.int32)
+#    fy = tf.cast(tf.floor(tf.sigmoid(py) * self.height), tf.int32)
+#    fx = tf.cast(tf.floor(tf.minimum(tf.maximum(px, 0), 1.0) * self.width), tf.int32)
+ #   fy = tf.cast(tf.floor(tf.minimum(tf.maximum(py, 0), 1.0) * self.height), tf.int32)
+#    fw = tf.minimum(tf.cast(tf.floor(tf.minimum(tf.maximum(pfw, 0.0), 1.0) * self.width), tf.int32), self.width - fx)
+#    fh = tf.minimum(tf.cast(tf.floor(tf.minimum(tf.maximum(pfh, 0.0), 1.0) * self.height), tf.int32), self.height - fy)
+    fw = tf.cast(tf.maximum(tf.minimum(pfw, tf.cast(self.width - fx, tf.float32)), 0.0), tf.int32)
+    fh = tf.cast(tf.maximum(tf.minimum(pfh, tf.cast(self.height - fy, tf.float32)), 0.0), tf.int32)
+    #fz = tf.maximum(tf.minimum(pz * self.depth, self.depth), 0)
+    fz = tf.minimum(tf.maximum(pz, 0.0), self.depth - 1)
+#    fz = tf.sigmoid(pz) * self.depth
+    unpad = tf.fill(
+      tf.pack([fw, fh]),
+      fz - self.depth + 1
     )
-
-    xyz_absolute = tf.boolean_mask(
-      self.coords,
-#      coords,
-      zbuf_as_one_hot
-    )
-    xyz_relative = xyz_absolute - proposal_xyz
-
-    top = tf.pack([tf.cos(proposal_theta), -tf.sin(proposal_theta)])
-    bot = tf.pack([tf.sin(proposal_theta), tf.cos(proposal_theta)])
-    rot_mat = tf.pack([top, bot])
-
-    # change to coordinate system about the proposal
-    xz_rel = tf.pack(
-     [xyz_relative[:, 0],
-      xyz_relative[:, 2]],
-     axis=0
-    )
-
-    # rotate coordinate system with proposal's rotation
-    xz_rot = tf.matmul(rot_mat, xz_rel)
-    x_rot = xz_rot[0, :]
-    z_rot = xz_rot[1, :]
-    xyz_rot = tf.pack(
-     [x_rot, 
-      xyz_relative[:, 1],
-      z_rot],
-     axis=1
-    )
-    over_sigma = tf.div(xyz_rot, proposal_sigma_xyz + tf.constant(1e-7))
-    squared = tf.square(over_sigma)
-    exponents = tf.mul(-0.5, tf.reduce_sum(squared, 1))
-    f_xyz = tf.exp(exponents)
-    intersection = tf.Print(tf.reduce_sum(f_xyz), [s])
-    return intersection
+    wpad = tf.pack([fx, self.width  - (fx + fw)])
+    hpad = tf.pack([fy, self.height - (fy + fh)])
+    padding = tf.pack([wpad, hpad])
+    padded = tf.pad(unpad, padding) + (self.depth - 1)
+#    padded = tf.Print(tf.pad(unpad, padding), [fx, fy, fw, fh, fz])
+#    result = tf.Print(padded, [tf.shape(padded)])
+    return padded
     
 def gen_coordinate_system(width, height, depth):
   x = tf.linspace(-1.0, 1.0, width)
@@ -233,13 +223,13 @@ from dataloader import obs_data_loader
 
 if __name__ == "__main__":
   params = {
-    'batch_size': 1,
+    'batch_size': 40,
     'width': 640,
     'height': 480,
     'depth': 256,
     'channels': 3,
     'pgrid_dims': [10, 8],
-    'bb_num': 2,
+    'bb_num': 1,
     'num_classes': 0, # breaks with n_classes > 0 right now
   }
 
@@ -267,19 +257,58 @@ if __name__ == "__main__":
 
   import numpy as np
 
+  batch_size, x_in, zbufs = [params[name] for name in ['batch_size', 'x_in', 'zbufs']]
   data_dir = "/data/r9k/obs_data"
 #  feed_dict = {params['x_in']: [np.load(data_dir + "/img/4b20069dba.npy")],
 #      params['zbufs']: [np.load(data_dir + "/zbuf/4b20069dba.npy")]}
-  fetches = [net.iou_loss]
   sess = tf.Session()
   print("built session!")
+
+  tf.scalar_summary('sq_loss', net.iou_loss)
+  merged = tf.merge_all_summaries()
+  run_id = "r9k-0#bs:{0}".format(batch_size)
+  train_writer = tf.train.SummaryWriter("/tmp/{0}".format(run_id), sess.graph)
+
+  fetches = [net.minimizer, net.iou_loss, merged]
+  val_fetches = [net.iou_loss, merged]
+
+
   sess.run(tf.initialize_all_variables())
   print("done initializing!")
 #  import pdb; pdb.set_trace()
-  for i in range(100):
-    proposals = sess.run(fetches, ret_feed_dict(i))
-    import pdb; pdb.set_trace()
-    print(i * params['batch_size'])
+  img_loader = obs_data_loader("img")
+  zbuf_loader = obs_data_loader("zbuf")
+  epoch_size = 2000
+  from math import floor
+  epochs = 10
+  import random
+  for e in range(epochs):
+    for i in range(0, floor(600 * 1000 * 0.8), batch_size):
+      feed_dict = {
+          x_in: img_loader[i: i + batch_size],
+          zbufs: zbuf_loader[i: i + batch_size]
+      }
+      trn, loss, summary = sess.run(fetches, feed_dict)
+      train_writer.add_summary(summary, i)
+      with open("./train_perf", 'a') as trn_f:
+        trn_f.write("{0}: {1} : {2}\n".format(e, i, loss))
+      print(loss)
+      if (floor(i/batch_size) % 200 == 0 and i != 0):
+        v_losses = []
+        for j, v_i in enumerate(range((600 * 1000) - 2000, 600 * 1000, batch_size)):
+          val_feed_dict = {
+            x_in: img_loader[i: i + batch_size],
+            zbufs: zbuf_loader[i: i + batch_size]
+          }
+          loss, summary = sess.run(val_fetches, val_feed_dict)
+          v_losses.append(loss)
+          print(j)
+        m_loss = np.mean(v_losses)
+        with open("./val_perf", 'a') as trn_f:
+          trn_f.write("{0}: {1} : {2}\n".format(e, i, m_loss))
+        print("VAL LOSS: {0}".format(m_loss))
+
+  #    print(i * params['batch_size'])
 
 #  import pdb; pdb.set_trace()
 #  opt = SGD()
