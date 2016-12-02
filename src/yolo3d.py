@@ -41,15 +41,6 @@ class YOLO3D():
       self.proposal_grid, 
       [self.batch_size, self.num_grid_cells, self.outputs_per_grid_cell]
     )
-
-    # setup coordinate system
-    with tf.variable_scope("topline"):
-      self.coords = gen_coordinate_system(
-          self.width, self.height, self.depth
-      )
-    self.iou_loss = self.batch_iou(self.proposals, self.sensible_zbufs)  
-
-
     opt = tf.train.AdamOptimizer(learning_rate=0.0001) #(learning_rate=0.0005)
     
 #    opt = tf.train.GradientDescentOptimizer(learning_rate=100)
@@ -124,72 +115,7 @@ class YOLO3D():
     )
     x = tf.reshape(x, self.proposal_shape_per_batch)
     return x
-
-  def batch_iou(self, batch_proposals, batch_zbufs):
-    per_example_i = tf.map_fn(
-      self.per_example_iou, 
-      tf.tuple([batch_proposals, batch_zbufs]),
-      dtype=tf.float32
-    )
-    return tf.reduce_mean(per_example_i)
-
-  def per_example_iou(self, arg_tup):
-    proposal_sets, zbuf = arg_tup
-    zbuf_r_n = self.num_grid_cells * self.bb_num
-    zbuf_r = tf.transpose(RepeatVector(zbuf_r_n)(zbuf), [1, 0, 2])
-    proposals = tf.reshape(proposal_sets, [-1, 7])
-#    func = partial(self.per_proposal_intersect, zbuf=zbuf)
-    proposal_zbufs = tf.map_fn(
-      self.proposal2paddedbuf,
-      proposals,
-      dtype=tf.float32
-    )
-    min_zbuf = tf.reduce_max(proposal_zbufs, 0)
-    flt_zbuf = tf.cast(zbuf, tf.float32)
-    sqrdiff = tf.square(tf.sub(min_zbuf, flt_zbuf))
-    return tf.reduce_mean(sqrdiff)
-
-  def proposal2paddedbuf(self, proposal):
-    px = proposal[0]
-    py = proposal[1]
-    pz = proposal[2]
-    pfw = proposal[3]
-    pfh = proposal[4]
-    pfz = proposal[5] # ignored
-    rot = proposal[6] # ignored
-    fx = tf.cast(tf.maximum(tf.minimum(tf.floor(px), self.width), 0.0), tf.int32)
-    fy = tf.cast(tf.maximum(tf.minimum(tf.floor(py), self.height), 0.0), tf.int32)
-#    fx = tf.cast(tf.floor(tf.sigmoid(px) * self.width), tf.int32)
-#    fy = tf.cast(tf.floor(tf.sigmoid(py) * self.height), tf.int32)
-#    fx = tf.cast(tf.floor(tf.minimum(tf.maximum(px, 0), 1.0) * self.width), tf.int32)
- #   fy = tf.cast(tf.floor(tf.minimum(tf.maximum(py, 0), 1.0) * self.height), tf.int32)
-#    fw = tf.minimum(tf.cast(tf.floor(tf.minimum(tf.maximum(pfw, 0.0), 1.0) * self.width), tf.int32), self.width - fx)
-#    fh = tf.minimum(tf.cast(tf.floor(tf.minimum(tf.maximum(pfh, 0.0), 1.0) * self.height), tf.int32), self.height - fy)
-    fw = tf.cast(tf.maximum(tf.minimum(pfw, tf.cast(self.width - fx, tf.float32)), 0.0), tf.int32)
-    fh = tf.cast(tf.maximum(tf.minimum(pfh, tf.cast(self.height - fy, tf.float32)), 0.0), tf.int32)
-    #fz = tf.maximum(tf.minimum(pz * self.depth, self.depth), 0)
-    fz = tf.minimum(tf.maximum(pz, 0.0), self.depth - 1)
-#    fz = tf.sigmoid(pz) * self.depth
-    unpad = tf.fill(
-      tf.pack([fw, fh]),
-      fz - self.depth + 1
-    )
-    wpad = tf.pack([fx, self.width  - (fx + fw)])
-    hpad = tf.pack([fy, self.height - (fy + fh)])
-    padding = tf.pack([wpad, hpad])
-    padded = tf.pad(unpad, padding) + (self.depth - 1)
-#    padded = tf.Print(tf.pad(unpad, padding), [fx, fy, fw, fh, fz])
-#    result = tf.Print(padded, [tf.shape(padded)])
-    return padded
-    
-def gen_coordinate_system(width, height, depth):
-  x = tf.linspace(-1.0, 1.0, width)
-  y = tf.linspace(-1.0, 1.0, height)
-  z = tf.linspace(-1.0, 1.0, depth)
-  # the indexing param is stupid - otherwise axes swap
-  coord = tf.pack(tf.meshgrid(x, y, z, indexing='ij'), axis=3)
-  return coord
-       
+      
 def conv_block(convs_params):
   def gen_conv_block(x):
     for cp in convs_params:
@@ -275,7 +201,6 @@ if __name__ == "__main__":
 
   sess.run(tf.initialize_all_variables())
   print("done initializing!")
-#  import pdb; pdb.set_trace()
   img_loader = obs_data_loader("img")
   zbuf_loader = obs_data_loader("zbuf")
   epoch_size = 2000
