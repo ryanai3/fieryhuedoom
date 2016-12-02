@@ -7,7 +7,6 @@ def npy_to_img(fname):
   scipy.misc.imsave('/data/r9k/obs_data/automap_img/' + fname +'.jpg', npy[:,:,0])
 
 def batch_convert(list_fname):
-  f = open(list_fname):
+  f = open(list_fname)
   for line in f:  
-    npy_to_img(line.split('.')[0]
-
+    npy_to_img(line.split('.')[0])
