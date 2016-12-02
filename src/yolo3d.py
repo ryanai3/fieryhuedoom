@@ -101,17 +101,17 @@ class YOLO3D():
 
   def generate_proposals(self, feature_stack):
     x = feature_stack
-    x = fc(x, 2048, activation='relu') 
+    x = fc(x, 2048, activation='leaky_relu') 
     # proposal = [x, y, z, sigma_x, sigma_y, sigma_z, rot]
     self.outputs_per_grid_cell = ((self.bb_num * 7) + self.num_classes)
     self.num_grid_cells = self.pgrid_dims[0] * self.pgrid_dims[1]
     self.proposal_shape_per_batch =  \
       [self.batch_size] + self.pgrid_dims + [self.outputs_per_grid_cell]
-
+    x = dropout(x, self.dropout_prob)
     x = fc(
       x, 
       self.num_grid_cells * self.outputs_per_grid_cell,
-      activation='relu'
+      activation='linear' 
     )
     x = tf.reshape(x, self.proposal_shape_per_batch)
     return x
@@ -121,11 +121,11 @@ def conv_block(convs_params):
     for cp in convs_params:
       if len(cp) == 3:
         x = conv2d(x, cp[2], [cp[0], cp[1]], 
-          padding='same', activation='relu'
+          padding='same', activation='leaky_relu'
         )
       elif len(cp) == 4:
         x = conv2d(x, cp[2], [cp[0], cp[1]], [cp[3], cp[3]],
-          padding='same', activation='relu'
+          padding='same', activation='leaky_relu'
         )
       else:
         print("didn't understand conv block params")
@@ -150,6 +150,7 @@ from dataloader import obs_data_loader
 if __name__ == "__main__":
   params = {
     'batch_size': 40,
+    'dropout_prob': 0.5,
     'width': 640,
     'height': 480,
     'depth': 256,
