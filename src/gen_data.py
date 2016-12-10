@@ -41,7 +41,7 @@ def setup_game(scenario = "defend_the_center"):
   game.set_depth_buffer_enabled(True)
 
   game.set_labels_buffer_enabled(True)
-  import pdb; pdb.set_trace()
+  #import pdb; pdb.set_trace()
   #game.clear_available_game_variables()
   #game.add_available_game_variable(GameVariable.POSITION_X)
   #game.add_available_game_variable(GameVariable.POSITION_Y)
@@ -51,7 +51,7 @@ def setup_game(scenario = "defend_the_center"):
   game.set_automap_mode(AutomapMode.OBJECTS_WITH_SIZE) 
 
   # so we can run this without an x server
-  game.set_window_visible(False)
+  game.set_window_visible(True)
   game.set_render_hud(False)
   game.set_render_weapon(False)
   game.set_render_particles(False)
@@ -89,7 +89,8 @@ def run_and_save_episodes(game, num_episodes):
 	  if l.value == uv:
             name = l.object_name
 	    obj_ids.append(object_id_map[l.object_name])
-      #import pdb; pdb.set_trace()
+	    break
+      import pdb; pdb.set_trace()
             
       to_save = {
         'img': img,
@@ -101,6 +102,7 @@ def run_and_save_episodes(game, num_episodes):
 
       save_dat(to_save)
       game.make_action(random.choice(actions))
+      #game.make_action(left)
     print(num_frames)
     sys.stdout.flush()
     num_frames_arr.append(num_frames)
