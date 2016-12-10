@@ -51,7 +51,7 @@ def setup_game(scenario = "defend_the_center"):
   game.set_automap_mode(AutomapMode.OBJECTS_WITH_SIZE) 
 
   # so we can run this without an x server
-  game.set_window_visible(True)
+  game.set_window_visible(False)
   game.set_render_hud(False)
   game.set_render_weapon(False)
   game.set_render_particles(False)
