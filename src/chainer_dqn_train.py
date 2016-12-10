@@ -1,3 +1,4 @@
+#!/usr/bin/python2
 # Simple DQN directly from the pixels
 # Adapted from https://github.com/dsanno/chainer-dqn/blob/master/src/train.py 
 # to work on VizDoom's Doom environment
@@ -9,9 +10,8 @@ import thread
 import os
 import random
 import numpy as np
-import pyautogui as ag
 #from game import PoohHomerun
-from net import Q
+from chainer_dqn_net import Q
 import chainer
 from chainer import functions as F
 from chainer import cuda, Variable, optimizers, serializers
@@ -25,9 +25,11 @@ shoot = [0, 0, 1]
 actions = [shoot, left, right]
 
 latent_size = 256
-gamma = 0.99
+gamma = 0.95
 batch_size = 64
-ag.PAUSE = 0
+
+q_result_filename = 'q_results.txt'
+q_file = open(q_result_filename, 'w')
 
 parser = argparse.ArgumentParser(description='Deep Q-learning Network for game using mouse')
 parser.add_argument('--gpu', '-g', default=-1, type=int,
@@ -36,8 +38,6 @@ parser.add_argument('--input', '-i', default=None, type=str,
                     help='input model file path without extension')
 parser.add_argument('--output', '-o', required=True, type=str,
                     help='output model file path without extension')
-parser.add_argument('--interval', default=100, type=int,
-                    help='interval of capturing (ms)')
 parser.add_argument('--random', '-r', default=0.2, type=float,
                     help='randomness of play')
 parser.add_argument('--pool_size', default=50000, type=int,
@@ -46,7 +46,7 @@ parser.add_argument('--random_reduction', default=0.000002, type=float,
                     help='reduction rate of randomness')
 parser.add_argument('--min_random', default=0.1, type=float,
                     help='minimum randomness of play')
-parser.add_argument('--train_term', default=4, type=int,
+parser.add_argument('--train_term', default=10, type=int,
                     help='training term size')
 parser.add_argument('--train_term_increase', default=0.00002, type=float,
                     help='increase rate of training term size')
@@ -54,23 +54,21 @@ parser.add_argument('--max_train_term', default=32, type=int,
                     help='maximum training term size')
 parser.add_argument('--double_dqn', action='store_true',
                     help='use Double DQN algorithm')
-parser.add_argument('--update_target_interval', default=2000, type=int,
+parser.add_argument('--update_target_interval', default=1000, type=int,
                     help='interval to update target Q function of Double DQN')
 parser.add_argument('--only_result', action='store_true',
                     help='use only reward to evaluate')
+parser.add_argument('--num_epochs', default=100, type=int)
 args = parser.parse_args()
 
-interval = args.interval / 1000.0
 only_result = args.only_result
 update_target_interval = args.update_target_interval
+num_epochs = args.num_epochs
 
 #game = PoohHomerun()
 #game.load_images('image')
-if game.detect_position() is None:
-    print "Error: cannot detect game screen position."
-    exit()
-train_width = 640 / 4
-train_height = 480 / 4
+train_width = 640
+train_height = 480
 random.seed()
 
 gpu_device = None
@@ -101,9 +99,9 @@ if only_result:
 frame = 0
 average_reward = 0
 
-optimizer = optimizers.AdaDelta(rho=0.95, eps=1e-06)
+optimizer = optimizers.AdaDelta()#(rho=0.95, eps=1e-06)
 optimizer.setup(q)
-optimizer.add_hook(chainer.optimizer.GradientClipping(0.1))
+optimizer.add_hook(chainer.optimizer.GradientClipping(10))
 if args.input is not None:
     serializers.load_hdf5('{}.model'.format(args.input), q)
     serializers.load_hdf5('{}.state'.format(args.input), optimizer)
@@ -124,111 +122,112 @@ def train():
     term_increase_rate = 1 + args.train_term_increase
     last_clock = time.clock()
     update_target_iteration = 0
-    if use_double_dqn:
-        target_q = q.copy()
-        target_q.reset_state()
-    while True:
-        term_size = int(current_term_size)
-        if frame < batch_size * term_size:
-            continue
-        batch_index = np.random.permutation(min(frame - term_size, POOL_SIZE))[:batch_size]
-        train_image = Variable(xp.asarray(state_pool[batch_index]))
-        y = q(train_image)
+ 
+    term_size = int(current_term_size)
+    batch_index = np.random.permutation(min(frame - term_size, POOL_SIZE))[:batch_size]
+    train_image = Variable(xp.asarray(state_pool[batch_index]))
+    y = q(train_image)
+    #import pdb; pdb.set_trace()
+    
+    for term in range(term_size):
+        print("batch!")
+        next_batch_index = (batch_index + 1) % POOL_SIZE
+        train_image = Variable(xp.asarray(state_pool[next_batch_index]))
+        score = q(train_image)
+        if only_result:
+            t = Variable(xp.asarray(reward_pool[batch_index]))
+        else:
+            best_q = cuda.to_cpu(xp.max(score.data, axis=1))
+            t = Variable(xp.asarray(reward_pool[batch_index] + (1 - terminal_pool[batch_index]) * gamma * best_q))
+        action_index = chainer.Variable(xp.asarray(action_pool[batch_index]))
+        loss = F.mean_squared_error(F.select_item(y, action_index), t)
+        y = score
+        optimizer.zero_grads()
+        loss.backward()
+        loss.unchain_backward()
+        optimizer.update()
+        batch_index = next_batch_index
+#        print "loss", float(cuda.to_cpu(loss.data))
+#        clock = time.clock()
+#        print "train", clock - last_clock
+#        last_clock = clock
+#        current_term_size = min(current_term_size * term_increase_rate, max_term_size)
+#        print "current_term_size ", current_term_size
+    print "Q", xp.mean(y.data)
+    q_file.write(str(xp.mean(y.data)) + '\n')
         
-        for term in range(term_size):
-            next_batch_index = (batch_index + 1) % POOL_SIZE
-            train_image = Variable(xp.asarray(state_pool[next_batch_index]))
-            score = q(train_image)
-            if only_result:
-                t = Variable(xp.asarray(reward_pool[batch_index]))
-            else:
-                best_q = cuda.to_cpu(xp.max(score.data, axis=1))
-                t = Variable(xp.asarray(reward_pool[batch_index] + (1 - terminal_pool[batch_index]) * gamma * best_q))
-            action_index = chainer.Variable(xp.asarray(action_pool[batch_index]))
-            loss = F.mean_squared_error(F.select_item(y, action_index), t)
-            y = score
-            optimizer.zero_grads()
-            loss.backward()
-            loss.unchain_backward()
-            optimizer.update()
-            batch_index = next_batch_index
-            print "loss", float(cuda.to_cpu(loss.data))
-            clock = time.clock()
-            print "train", clock - last_clock
-            last_clock = clock
-        current_term_size = min(current_term_size * term_increase_rate, max_term_size)
-        print "current_term_size ", current_term_size
 
 if __name__ == '__main__':
-    try:
-	doom_game = gd.setup_game()
-        thread.start_new_thread(train, ())
-        next_clock = time.clock() + interval
-        save_iter = 10000
-        save_count = 0
-        action = None
-        action_q = q.copy()
-        action_q.reset_state()
-        while True:
-            if action is not None:
-                #game.play(action)
-		reward = doom_game.make_action(action)
+    doom_game = gd.setup_game()
+    print 'game initialized'
+#    thread.start_new_thread(train, ())
+    save_iter = 10000
+    save_count = 0
+    action = left
+    action_q = q.copy()
+    action_q.reset_state()
+    old_health = 100
+    old_ammo = 26
+    ct = 0
+    w_u = 0
+    epochs = 0
+
+    while epochs < num_epochs:
+        index = frame % POOL_SIZE
+       #game.play(action)
+        reward = doom_game.make_action(action)
 # convert this crap to pull img from vizdoom
-            state = doom_game.get_state()
-            train_image = state.screen_buffer().astype(np.float32).transpose((2, 0, 1))
+        terminal = doom_game.is_episode_finished()
+        if terminal:
+            doom_game.new_episode()
+            terminal_pool[index - 1] = 1
 
+#                action_q = q.copy()
+            action_q.reset_state()
+            continue
+
+        state = doom_game.get_state()
+        game_vars = state.game_variables
+        new_health = game_vars[1]
+        delta_health = new_health - old_health
+        old_health = new_health
+        new_ammo = game_vars[0]
+        delta_ammo = new_ammo - old_ammo
+        old_ammo = new_ammo
+        reward += 0.05 * delta_health
+        reward += 0.02 * delta_ammo
+            
+        train_image = cuda.to_gpu((state.screen_buffer.astype(np.float32).transpose((2, 0, 1))), device=args.gpu)
             #reward, terminal = game.process(screen)
-            terminal = doom_game.is_episode_finished()
-            if reward is not None:
-                
-                train_image = Variable(train_image, volatile=True)
-                score = action_q(train_image, train=False)
-                best_idx = int(np.argmax(score.data))
 
-                # action = game.randomize_action(best, random_probability)
-		action = randomize_action(actions[best_idx], random_probability)
-                print action, float(score.data[0][action]), best, float(score.data[0][best]), reward
-                index = frame % POOL_SIZE
-                state_pool[index] = cuda.to_cpu(train_image.data)
-                action_pool[index] = action
-                reward_pool[index - 1] = reward
-                average_reward = average_reward * 0.9999 + reward * 0.0001
-                print "average reward: ", average_reward
-                if terminal:
-                    terminal_pool[index - 1] = 1
-                    if only_result:
-                        i = index - 2
-                        r = reward
-                        while terminal_pool[i] == 0:
-                            r = reward_pool[i] + gamma * r
-                            reward_pool[i] = r
-                            i -= 1
-                    action_q = q.copy()
-                    action_q.reset_state()
-                else:
-                    terminal_pool[index - 1] = 0
-                frame += 1
-                save_iter -= 1
-                random_probability *= random_reduction_rate
-                if random_probability < min_random_probability:
-                    random_probability = min_random_probability
-            else:
-                action = None
-                if save_iter <= 0:
-                    print 'save: ', save_count
-                    serializers.save_hdf5('{0}_{1:03d}.model'.format(args.output, save_count), q)
-                    serializers.save_hdf5('{0}_{1:03d}.state'.format(args.output, save_count), optimizer)
-                    save_iter = 10000
-                    save_count += 1
-            current_clock = time.clock()
-            wait = next_clock - current_clock
-            print 'wait: ', wait
-            if wait > 0:
-                next_clock += interval
-                time.sleep(wait)
-            elif wait > -interval / 2:
-                next_clock += interval
-            else:
-                next_clock = current_clock + interval
-    except KeyboardInterrupt:
-        pass
+        train_image = Variable(train_image.reshape((1,) + train_image.shape) / 127.5 - 1, volatile=True)
+        score = action_q(train_image, train=False)
+
+        best_idx = int(F.argmax(score).data)
+        
+
+        # action = game.randomize_action(best, random_probability)
+        action = randomize_action(actions[best_idx], random_probability)
+        
+        state_pool[index] = cuda.to_cpu(train_image.data)
+        action_pool[index] = actions.index(action)
+        reward_pool[index - 1] = reward
+        average_reward = average_reward * 0.9 + reward * 0.1
+        if frame % 100 == 0:
+            print "average reward: ", average_reward
+        terminal_pool[index - 1] = 0
+        frame += 1
+        save_iter -= 1
+        
+        if frame % 1000 == 0:
+           train()
+           action_q = q.copy()
+           action_q.reset_state()
+           if frame % (1000 * 100) == 0:
+               epochs += 1
+               chainer.serializers.save_hdf5("/data/r9k/past_runs/chainer_dqn_{0}".format(epochs), action_q)
+
+               
+        random_probability = max(random_probability * random_reduction_rate, min_random_probability)
+        
+

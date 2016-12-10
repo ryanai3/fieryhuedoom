@@ -5,7 +5,7 @@ import chainer.functions as F
 import chainer.links as L
 
 class Q(chainer.Chain):
-    def __init__(self, width=160, height=120, channel=3, action_size=3, latent_size=256):
+    def __init__(self, width=640, height=480, channel=3, action_size=3, latent_size=256):
         feature_width = width
         feature_height = height
         for i in range(4):
@@ -16,7 +16,7 @@ class Q(chainer.Chain):
             conv1 = L.Convolution2D(channel, 16, 8, stride=4, pad=3),
             conv2 = L.Convolution2D(16, 32, 5, stride=2, pad=2),
             conv3 = L.Convolution2D(32, 64, 5, stride=2, pad=2),
-            lstm  = L.LSTM(feature_size, latent_size),
+            lstm  = L.LSTM(76800, latent_size),
             q     = L.Linear(latent_size, action_size),
         )
         self.width = width
@@ -27,7 +27,7 @@ class Q(chainer.Chain):
         h1 = F.relu(self.conv1(x))
         h2 = F.relu(self.conv2(h1))
         h3 = F.relu(self.conv3(h2))
-        h4 = self.lstm(h3)
+	h4 = self.lstm(h3)
         q = self.q(h4)
         return q
 

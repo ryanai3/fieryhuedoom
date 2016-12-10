@@ -56,8 +56,6 @@ def setup_game(scenario = "defend_the_center"):
   game.set_render_weapon(False)
   game.set_render_particles(False)
 
-  # so we can run this without an x server
-  # game.set_window_visible(False)
   game.init()
 
   return game
@@ -85,19 +83,19 @@ def run_and_save_episodes(game, num_episodes):
       rects = np.array([get_bb(labels_buf, value) for value in unique_vals])
       obj_ids = []
       for uv in unique_vals:
-	for l in state.labels:
-	  if l.value == uv:
+        for l in state.labels:
+          if l.value == uv:
             name = l.object_name
-	    obj_ids.append(object_id_map[l.object_name])
-	    break
+            obj_ids.append(object_id_map[l.object_name])
+            break
       import pdb; pdb.set_trace()
             
       to_save = {
         'img': img,
         'zbuf': zbuf,
         'bbs': rects,
-	'automap': automap,
-	'obj_ids': obj_ids
+        'automap': automap,
+        'obj_ids': obj_ids
       }
 
       save_dat(to_save)
