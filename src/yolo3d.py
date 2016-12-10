@@ -4,8 +4,11 @@ import tensorflow as tf
 from tflearn.layers.conv import conv_2d as conv2d
 from tflearn.layers.conv import max_pool_2d as maxpool
 from tflearn.layers.core import fully_connected as fc
+from tflearn.layers.core import dropout
 from functools import partial
 from keras.layers.core import RepeatVector
+
+from math import floor
 
 def flatten(l):
   return [item for sublist in l for item in sublist]
@@ -32,6 +35,11 @@ class YOLO3D():
     self.flt_zbufs = tf.cast(self.sensible_zbufs, tf.float32)
     self.sensible_zbufs = tf.cast(self.sensible_zbufs, tf.int32)
 
+    self.upleft, self.botright = [
+      tf.placeholder(tf.float32, [self.batch_size] + self.pgrid_dims + [self.bb_num, 2])
+      for i in range(2)
+    ]
+    self.areas = tf.placeholder(tf.float32, [self.batch_size] + self.pgrid_dims + [self.bb_num])
 
     self.features = self.generate_feature_stack(self.sensible_x_in)
 
@@ -42,7 +50,7 @@ class YOLO3D():
       [self.batch_size, self.num_grid_cells, self.outputs_per_grid_cell]
     )
     opt = tf.train.AdamOptimizer(learning_rate=0.0001) #(learning_rate=0.0005)
-    
+    self.loss = self.gen_loss()
 #    opt = tf.train.GradientDescentOptimizer(learning_rate=100)
     self.minimizer = opt.minimize(self.iou_loss)
 
@@ -115,7 +123,43 @@ class YOLO3D():
     )
     x = tf.reshape(x, self.proposal_shape_per_batch)
     return x
-      
+
+  def gen_loss(self):
+    import pdb; pdb.set_trace()
+    coords = tf.reshape(
+      self.proposal_grid[:, :, :, (self.num_classes + self.bb_num):],
+      [self.batch_size] + self.pgrid_dims + [self.bb_num, -1]
+   )
+    cell_width = floor(self.width / self.pgrid_dims[0])
+    cell_height = floor(self.height / self.pgrid_dims[1])
+    wh = tf.pow(coords[:, :, :, :, 2:4], 2) 
+    area_pred = wh[:, :, :, :, 0] * wh[:, :, :, :, 1]
+    centers = coords[:, :, :, :, 0:2]
+    bb_floor = centers - (wh * 0.5)
+    bb_ceil = centers + (wh * 0.5)
+
+    # calculate intersection areas:
+    intersect_upleft   = tf.maximum(bb_floor, self.upleft)
+    intersect_botright = tf.minimum(bb_ceil, self.botright)
+    intersect_wh = intersect_botright - intersect_upleft
+    intersect_wh = tf.maximum(intersect_wh, 0.0)
+    intersect = tf.mul(intersect_wh[:, :, :, 0], intersect_wh[:, :, :, 1])
+
+    # calculate the best IOU, set "responsibility" for predictions
+    iou = tf.div(intersect, self.areas + area_pred - intersect)
+    best_box = tf.equal(iou, tf.reduce_max(iou, [2], True))
+    best_box = tf.to_float(best_box)
+    confs = tf.mul(best_box, self.confs)
+
+    # take care of weights in loss
+    weight_con = self.snoob * (1.0 - confs) + self.sconf * confs
+    conid = tf.mul(_conid, weight_con)
+    weight_coo = tf.concat(3, 4 * [tf.expand_dims(confs, -1)])
+    cooid = tf.mul(_cooid, scoor * weight_coo)
+    proid = sprob * self.proid
+
+    import pdb; pdb.set_trace()
+
 def conv_block(convs_params):
   def gen_conv_block(x):
     for cp in convs_params:
@@ -156,8 +200,8 @@ if __name__ == "__main__":
     'depth': 256,
     'channels': 3,
     'pgrid_dims': [10, 8],
-    'bb_num': 1,
-    'num_classes': 0, # breaks with n_classes > 0 right now
+    'bb_num': 2,
+    'num_classes': 1,
   }
 
   params['x_in'] = tf.placeholder(
@@ -205,7 +249,6 @@ if __name__ == "__main__":
   img_loader = obs_data_loader("img")
   zbuf_loader = obs_data_loader("zbuf")
   epoch_size = 2000
-  from math import floor
   epochs = 10
   import random
   for e in range(epochs):
