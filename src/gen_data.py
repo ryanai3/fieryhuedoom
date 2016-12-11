@@ -30,7 +30,7 @@ def load_doomitems(path='/usr/lib/python3.5/site-packages/doom_py/src/vizdoom/wa
   object_id_map['Blood'] = i
 
 # setup a game to generate simple data for observation model
-def setup_game(scenario = "defend_the_center"):
+def setup_game(scenario = "defend_the_center", show_window=False, show_hud=False, show_weapon=False, show_particles=False):
   game = DoomGame()
   game.load_config("/data/r9k/scenarios/{0}.cfg".format(scenario))
   # need this so it doesn't bug out
@@ -50,11 +50,10 @@ def setup_game(scenario = "defend_the_center"):
   game.set_automap_buffer_enabled(True)
   game.set_automap_mode(AutomapMode.OBJECTS_WITH_SIZE) 
 
-  # so we can run this without an x server
-  game.set_window_visible(False)
-  game.set_render_hud(False)
-  game.set_render_weapon(False)
-  game.set_render_particles(False)
+  game.set_window_visible(show_window)
+  game.set_render_hud(show_hud)
+  game.set_render_weapon(show_weapon)
+  game.set_render_particles(show_particles)
 
   game.init()
 
