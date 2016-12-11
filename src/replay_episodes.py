@@ -5,6 +5,7 @@ import gen_data as gd
 import argparse
 from chainer_dqn_net import Q
 from chainer import functions as F
+from nets import *
 import numpy as np
 import imageio
 import cv2
@@ -15,12 +16,15 @@ shoot = [0, 0, 1]
 
 actions = [shoot, left, right]
 
-def play_using_saved_q(q_filepath, num_episodes=1, save_replay=False, replay_filepath=None):
+def play_using_saved_q(q_filepath, num_episodes=1, save_replay=False, replay_filepath=None, device=0):
+    d = int(device)
+    cuda.get_device(d).use()
     if save_replay and not replay_filepath:
         print ("Error: please provide a filepath for replays")
-    q = Q(width=640, height=480, latent_size=256, action_size=3)
-    saved_q = q.copy()
-    saved_q.to_gpu(device=0)
+    #saved_q = Q(width=640, height=480, latent_size=256, action_size=3)
+    saved_q = ControlYOLO(**{'pgrid_dims': [10, 8], 'bb_num': 1, 'num_classes': 10, 'drop_prob': 0.5})
+    saved_q.to_gpu(device=d)
+    #import pdb; pdb.set_trace()
     serializers.load_hdf5(q_filepath, saved_q)
     doom_game = gd.setup_game(show_window=False)
     for i in range(int(num_episodes)):
@@ -28,13 +32,15 @@ def play_using_saved_q(q_filepath, num_episodes=1, save_replay=False, replay_fil
         total_reward = 0
         while not doom_game.is_episode_finished():
             state = doom_game.get_state()
-            screen_buf = cuda.to_gpu((state.screen_buffer.astype(np.float32).transpose((2, 0, 1))), device=0)
-            screen_buf = Variable(screen_buf.reshape((1,) + screen_buf.shape) / 127.5 - 1)
+            screen_buf = cuda.to_gpu((state.screen_buffer.astype(np.float32).transpose((2, 0, 1))), device=d)
+            screen_buf = Variable(screen_buf.reshape((1,) + screen_buf.shape) / 127.5 - 1, volatile=True)
             scores = saved_q(screen_buf, train=False)
             best_idx = int(F.argmax(scores).data)
             total_reward += doom_game.make_action(actions[best_idx])
         print("Total reward:", total_reward)
     doom_game.close()
+
+
 
 def replay(replay_filepath):
     print("*****************")
