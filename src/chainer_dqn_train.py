@@ -28,8 +28,8 @@ latent_size = 256
 gamma = 0.95
 batch_size = 64
 
-q_result_filename = 'q_results.txt'
-q_file = open(q_result_filename, 'w')
+q_result_filename = 'r1_q_results.txt'
+q_file = open(q_result_filename, 'a')
 
 parser = argparse.ArgumentParser(description='Deep Q-learning Network for game using mouse')
 parser.add_argument('--gpu', '-g', default=-1, type=int,
@@ -99,9 +99,9 @@ if only_result:
 frame = 0
 average_reward = 0
 
-optimizer = optimizers.AdaDelta()#(rho=0.95, eps=1e-06)
+optimizer = optimizers.AdaGrad(lr=10 ** -6)#(rho=0.95, eps=1e-06)
 optimizer.setup(q)
-optimizer.add_hook(chainer.optimizer.GradientClipping(10))
+optimizer.add_hook(chainer.optimizer.GradientClipping(0.01))
 if args.input is not None:
     serializers.load_hdf5('{}.model'.format(args.input), q)
     serializers.load_hdf5('{}.state'.format(args.input), optimizer)
@@ -131,6 +131,7 @@ def train():
     
     for term in range(term_size):
         print("batch!")
+#        import pdb; pdb.set_trace()
         next_batch_index = (batch_index + 1) % POOL_SIZE
         train_image = Variable(xp.asarray(state_pool[next_batch_index]))
         score = q(train_image)
@@ -153,7 +154,9 @@ def train():
 #        last_clock = clock
 #        current_term_size = min(current_term_size * term_increase_rate, max_term_size)
 #        print "current_term_size ", current_term_size
-    print "Q", xp.mean(y.data)
+#        print "Q", xp.mean(y.data)
+    print "Qs", y.data
+#    print "losses", loss.data
     q_file.write(str(xp.mean(y.data)) + '\n')
         
 
@@ -194,8 +197,8 @@ if __name__ == '__main__':
         new_ammo = game_vars[0]
         delta_ammo = new_ammo - old_ammo
         old_ammo = new_ammo
-        reward += 0.05 * delta_health
-        reward += 0.02 * delta_ammo
+#        reward += 0.05 * delta_health
+#        reward += 0.02 * delta_ammo
             
         train_image = cuda.to_gpu((state.screen_buffer.astype(np.float32).transpose((2, 0, 1))), device=args.gpu)
             #reward, terminal = game.process(screen)
@@ -213,6 +216,7 @@ if __name__ == '__main__':
         action_pool[index] = actions.index(action)
         reward_pool[index - 1] = reward
         average_reward = average_reward * 0.9 + reward * 0.1
+#        print(reward)
         if frame % 100 == 0:
             print "average reward: ", average_reward
         terminal_pool[index - 1] = 0
@@ -221,11 +225,12 @@ if __name__ == '__main__':
         
         if frame % 1000 == 0:
            train()
-           action_q = q.copy()
-           action_q.reset_state()
+           if frame % (1000 * 10) == 0:
+             action_q = q.copy()
+             action_q.reset_state()
            if frame % (1000 * 100) == 0:
                epochs += 1
-               chainer.serializers.save_hdf5("/data/r9k/past_runs/chainer_dqn_{0}".format(epochs), action_q)
+               chainer.serializers.save_hdf5("/data/r9k/past_runs/r1-chainer_dqn_{0}".format(epochs), action_q)
 
                
         random_probability = max(random_probability * random_reduction_rate, min_random_probability)

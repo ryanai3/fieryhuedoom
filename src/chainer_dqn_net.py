@@ -27,7 +27,7 @@ class Q(chainer.Chain):
         h1 = F.relu(self.conv1(x))
         h2 = F.relu(self.conv2(h1))
         h3 = F.relu(self.conv3(h2))
-	h4 = self.lstm(h3)
+      	h4 = self.lstm(h3)
         q = self.q(h4)
         return q
 
