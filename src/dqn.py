@@ -204,11 +204,11 @@ class DQN():
           self.action_q.reset_state()
 #          self.action_q.reset_state()
   #        self.add_to_replay_buf(self.frames_per_replay_update)
-#        self.train_batches(self.train_term)
-        self.train_batch()
+        self.train_batches(self.train_term)
+#        self.train_batch()
       self.epsilon = self.epsilon * 0.98
       self.action_q.reset_state()
-      chainer.serializers.save_hdf5("/data/r9k/past_runs/fancy_dqn_{0}".format(epoch), self.action_q)
+      chainer.serializers.save_hdf5("/data/r9k/past_runs/dqn_final_{0}".format(epoch), self.action_q)
   
 import argparse
 from chainer_dqn_net import Q
@@ -226,13 +226,13 @@ if __name__ == "__main__":
 
   params =  {
     'gpu': 0,
-    'pool_size': 25 * 1024,
+    'pool_size': 10 * 1024,
     'epsilon': 0.2,
-    'train_term': 1,
+    'train_term': 8,
     'q_freeze_interval': 500,
     'num_epochs': 100,
     'gamma': 0.95,
-    'batch_size': 16,
+    'batch_size': 32,
     'batches_per_epoch': 2500, #1000, #100,
     # 150/min -> 1500 = 10 min, 15,000 = 1hr 40min, 
     'batches_per_replay_update': 10,
@@ -246,7 +246,7 @@ if __name__ == "__main__":
     'gradient_clip': 0.01
   }
 
-  params['target_q'] = ControlYOLO(**{'pgrid_dims': [10, 8], 'bb_num': 1, 'num_classes': 10, 'drop_prob': 0.5})
+#  params['target_q'] = ControlYOLO(**{'pgrid_dims': [10, 8], 'bb_num': 1, 'num_classes': 10, 'drop_prob': 0.5})
   dqn = DQN(params)
 #  import pdb; pdb.set_trace()
   dqn.run()

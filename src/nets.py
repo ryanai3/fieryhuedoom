@@ -62,25 +62,42 @@ class YOLO(chainer.Chain):
     self.__dict__.update(params)
     
     outputs_per_grid_cell = ((self.bb_num * 7) + self.num_classes)
-    num_grid_cells = self.pgrid_dims[0] * self.pgrid_dims[1]
-    vec_len = num_grid_cells * outputs_per_grid_cell
+    self.num_grid_cells = self.pgrid_dims[0] * self.pgrid_dims[1]
+    vec_len = self.num_grid_cells * outputs_per_grid_cell
     self.proposal_grid_shape = self.pgrid_dims + [outputs_per_grid_cell]
 
-    super(YOLO).__init__(
-      fc1 = L.linear(in_size=None, out_size=4096),
-      fc2 = L.linear(in_size=4096, out_size=vec_len)
+    super(YOLO, self).__init__(
+      features = YOLO_Feature_Stack(),
+      fc1 = L.Linear(in_size=None, out_size=1024),
+      fc_p = L.Linear(in_size=1024, out_size=vec_len),
+      fcq1 = L.Linear(in_size=vec_len, out_size=1024),
+      fcq2 = L.Linear(in_size=1024, out_size=1024),
+      fcq3 = L.Linear(in_size=1024, out_size=1024),
+      q = L.Linear(in_size=1024, out_size=3)
     )
 
-    self.features = YOLO_Feature_Stack()
 
-  def __call__(self, x, train=True):
+  def proposals(self, x, train=True):
     out = self.features(x)
     out = self.fc1(out)
     out = F.dropout(out, self.drop_prob)
-    out = F.relu(out)
-    out = self.fc2(out)
-    out = F.reshape(out, self.proposal_grid_shape)
+    out = F.leaky_relu(out)
+    out = self.fc_p(out)
+    proposals = F.reshape(out, [x.shape[0]] + self.proposal_grid_shape)
+    return proposals
+
+  def __call__(self, x, train=True):
+    out = self.proposals(x, train)
+    out = F.reshape(out, [out.shape[0], -1])
+    for fc in [self.fcq1, self.fcq2, self.fcq3]:
+      out = F.leaky_relu(fc(out))
+    out = self.q(out)
     return out
+
+  def reset_state(self):
+#    self.lstm.reset_state()
+    pass
+
 
 class YOLO_Feature_Stack(chainer.Chain):
   def __init__(self):

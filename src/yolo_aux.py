@@ -10,6 +10,8 @@ from chainer import cuda, Variable, optimizers, serializers
 
 import gen_data as gd
 
+from util import *
+
 class DQN():
   def __init__(self, params):
     # params: gpu, input_f, output_f, 
@@ -35,6 +37,9 @@ class DQN():
       'Blood': 2
     }
     random.seed()
+    self.to_add = np.array([1, 1, 0, 0, 1])
+    self.to_mul = np.array([320, 240, 1, 1, 60])
+    self.to_mul2 = np.array([1, 1, 320, 240, 1])
 
   def move_to_gpu_if_able(self):
     gpu_device = None
@@ -58,7 +63,7 @@ class DQN():
     self.action_pool[...] = 0
     self.reward_pool[...] = 0
     self.terminal_pool[...] = 0
-    self.aux_pool[...] = 0
+#    self.aux_pool[...] = 0
 
   def setup_game(self):
 #   self.games = [gd.setup_game() for i in range(self.num_par_games)]
@@ -187,7 +192,7 @@ class DQN():
     print "min_reward", min(rewards)
     self.frame += nframes
 
-      
+     
   def get_bb(buf, value):
     y, x = np.where(buf == value)
     x_min, x_max = np.min(x), np.max(x)
@@ -195,6 +200,59 @@ class DQN():
     return np.array(
       [[x_min, y_min],
        [x_max, y_max]]
+
+  def scale_coords(self, c):
+    sc = (c + self.to_add) * self.to_mul
+    sc[2:4] = [max(sc[2], 1e-3), max(sc[3], 1e-3)]
+    sc[2:4] = sc[2:4]**2
+    sc = sc * self.to_mul2
+    return sc
+
+  def bb_loss(self, s_j, aux_j):
+    loss = Variable(self.xp.array(0.0).astype(self.xp.float32))
+    proposals = self.action_q.proposals(s_j)
+    proposals_data = cuda.to_cpu(proposals.data)
+    pgrid_dims = self.action_q.pgrid_dims
+    bb_num = self.action_q.bb_num
+    num_classes = self.action_q.num_classes
+    for batch in range(s_j.shape[0]):
+      for x_i in range(self.action_q.pgrid_dims[0]):
+        for y_i in range(self.action_q.pgrid_dims[1]):
+          cell_prop = proposals[batch, x_i, y_i, :]
+          cell_data = proposals_data[batch, x_i, y_i, :]
+          aux = aux_j[batch]
+          if aux[0] == None: # No bounding boxes to predict
+            for b in range(bb_num):
+              loss += self.no_obj * (cell_prop[b * 7] ** 2)
+            continue
+          y_classes = aux[1]
+          p_classes = cell_prop[-num_classes:]
+          y_classes_gpu = Variable(self.xp.asarray(y_classes))
+          loss += F.sum((y_classes_gpu - p_classes)**2)
+          y_obj_coords = aux[0]
+          y_obj_coords_gpu = Variable(self.xp.asarray(y_obj_coords))
+          for obj_i in range(y_obj_coords.shape[0]):
+            y_coords = self.scale_coords(y_obj_coords[obj_i])
+            best_iou = 0
+            best_index = -1
+            best_rmse = 10000
+            for b in range(bb_num):
+              p_coords = self.scale_coords(cell_data[b * 7 + 1:b * 7 + 6])
+              iou = box_iou(p_coords, y_coords)
+              if best_iou > 0 or iou > 0:
+                if iou > best_iou:
+                  best_index = b
+                  best_iou = iou
+              else:
+                rmse = box_rmse(p_coords, y_coords)
+                if rmse < best_rmse:
+                  best_index = b
+                  best_rmse = rmse
+            best_p_coords = cell_prop[best_index * 7 + 1: best_index * 7 + 6]
+            y_coords_gpu = y_obj_coords_gpu[obj_i]
+            loss += self.coord * F.sum((best_p_coords - y_coords_gpu) ** 2)
+            loss += (1 - cell_prop[best_index * 7]) ** 2
+    return loss
 
   def train_batches(self, num_batches):
     j =  \
@@ -217,10 +275,10 @@ class DQN():
     a_j = Variable(self.xp.asarray(self.action_pool[j]))
     qs = self.action_q(s_j)
     q_preds = F.select_item(qs, a_j)
-    loss = F.mean_squared_error(y_j, q_preds)
+    q_loss = F.mean_squared_error(y_j, q_preds)
     self.optimizer.zero_grads()
-    res = loss.backward()
-    loss.unchain_backward()
+    res = q_loss.backward()
+    q_loss.unchain_backward()
     self.optimizer.update()
     qp_cpu = qs.data
 #    print "loss", loss.data
@@ -239,20 +297,22 @@ class DQN():
     s_j1 = (Variable(self.xp.asarray(self.state_pool[j + 1].astype(np.float32)))/127.5) - 1
     Qhat = self.target_q(s_j1, train=False)
     max_Q = cuda.to_cpu(F.max(Qhat, axis=1).data)
+    bb_loss = self.bb_loss(s_j, self.aux_pool[j])
 #    max_Q = cuda.to_cpu(self.xp.max(Qhat.data, axis=1))
     y_j = Variable(self.xp.asarray(self.reward_pool[j] + (1 - self.terminal_pool[j]) * self.gamma * max_Q))
     a_j = Variable(self.xp.asarray(self.action_pool[j]))
     qs = self.action_q(s_j)
     q_preds = F.select_item(qs, a_j)
     loss = F.mean_squared_error(y_j, q_preds)
+    loss = bb_loss
     self.optimizer.zero_grads()
     loss.backward()
     loss.unchain_backward()
     self.optimizer.update()
     qp_cpu = qs.data
-    print "Q", np.mean(q_preds.data)
+#    print "Q", np.mean(q_preds.data)
     print "loss", loss.data
-    print np.mean(qp_cpu, axis=0)
+#    print np.mean(qp_cpu, axis=0)
 
   def run(self):
     self.run_episodes(self.pool_size)
@@ -283,7 +343,7 @@ class DQN():
 import argparse
 from chainer_dqn_net import Q
 
-from nets import ControlYOLO
+from nets import *
 
 if __name__ == "__main__":
   # params: gpu, input_f, output_f, 
@@ -295,14 +355,14 @@ if __name__ == "__main__":
     #         optimizer, gradient_clip
 
   params =  {
-    'gpu': 0,
-    'pool_size': 25 * 1024,
+    'gpu': 1,
+    'pool_size': 10, # x * 1000
     'epsilon': 0.2,
     'train_term': 1,
     'q_freeze_interval': 500,
     'num_epochs': 100,
     'gamma': 0.95,
-    'batch_size': 16,
+    'batch_size': 2,
     'batches_per_epoch': 2500, #1000, #100,
     # 150/min -> 1500 = 10 min, 15,000 = 1hr 40min, 
     'batches_per_replay_update': 10,
@@ -312,11 +372,14 @@ if __name__ == "__main__":
     'channels': 3,
     'actions': [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
     'target_q': Q(width=640, height=480, channel=3, action_size=3),
-    'optimizer': optimizers.AdaGrad(lr = 10 ** -6),
-    'gradient_clip': 0.01
+    'optimizer': optimizers.AdaGrad(lr = (10 ** -6)/16),
+    'gradient_clip': 0.01,
+    # yolo params (hacky):
+    'no_obj': 0.5,
+    'coord': 5.0,
   }
 
-  params['target_q'] = ControlYOLO(**{'pgrid_dims': [10, 8], 'bb_num': 1, 'num_classes': 10, 'drop_prob': 0.5})
+  params['target_q'] = YOLO(**{'pgrid_dims': [10, 8], 'bb_num': 3, 'num_classes': 3, 'drop_prob': 0.5})
   dqn = DQN(params)
 #  import pdb; pdb.set_trace()
   dqn.run()
