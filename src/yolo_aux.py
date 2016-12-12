@@ -29,8 +29,12 @@ class DQN():
     self.action_q = self.target_q.copy()
     self.prep_optimizer()
     self.frame = 0
+    self.object_id_map = {
+      'MarineChainsaw': 0,
+      'Demon': 1,
+      'Blood': 2
+    }
     random.seed()
-
 
   def move_to_gpu_if_able(self):
     gpu_device = None
@@ -48,7 +52,7 @@ class DQN():
     self.action_pool = np.zeros((self.pool_size,), dtype=np.int32)
     self.reward_pool = np.zeros((self.pool_size,), dtype=np.float32)
     self.terminal_pool = np.zeros((self.pool_size,), dtype=np.float32)
-    self.aux_pool = np.zeros((self.pool_size,), dtype=np.float32)
+    self.aux_pool = np.zeros((self.pool_size,), dtype=np.object)
     # allocate memory:
     self.state_pool[...] = 0
     self.action_pool[...] = 0
@@ -101,11 +105,67 @@ class DQN():
 #      reward += (0.05 * delta_health) + (0.02 * delta_ammo)
       reward = r_t #+ delta_ammo * 0.02
 
+
+      unique_vals = np.unique(gs_t.labels_buffer)
+      rects = []
+      obj_ids = []
+      zs = []
+      for uv in unique_vals:
+        for l in gs_t.labels:
+          if l.value == uv:
+            rects.append(get_bb(labels_buf, uv))
+            zs.append(np.mean(gs_t.depth_buffer[labels_buf == uv]))
+            obj_ids.append(object_id_map[l.object_name])
+            break
+
+      numx = self.action_q.pgrid_dims[0]
+      numy = self.action_q.pgrid_dims[1]
+      grid = np.zeros((numx, numy), dtype=np.dtype('O'))
+      for j in range(len(rects)):
+        rect = rects[j]
+        z = zs[j]
+        obj_id = obj_ids[j]
+          
+        xmin = rect[0, 0] / 320.0 - 1
+        xmax = rect[1, 0] / 320.0 - 1
+        xcenter = (xmin + xmax) / 2
+        ymin = rect[0, 1] / 240.0 - 1
+        ymax = rect[1, 1] / 240.0 - 1
+        ycenter = (ymin + ymax) / 2
+
+        cell_x_min = find_cell(xcenter, numx)
+        cell_y_min = find_cell(ycenter, numy)
+        # care about center relative to box min
+        xcenter -= cell_x_min
+        ycenter -=cell_y_min
+
+        xidx = find_idx(cell_x_min, numx)
+        yidx = find_idx(cell_y_min, numy)
+
+        coords = np.array([xcenter, ycenter, math.sqrt(xmax - xmin), math.sqrt(ymax- ymin), z/ 60 - 1])
+        cur = grid[xidx, yidx]
+        if cur == 0:
+          classes = np.zeros((3,))
+          classes[obj_id] = 1
+          grid[xidx, yidx] = (coords.reshape((1,5)), classes)
+        else:
+          cur[1][obj_id] += 1 
+          grid[xidx, yidx] = (np.vstack(cur[0], coords), cur[1])
+
+      for j in range(numx):
+        for k in range(numy):
+          if grid[j, k] == 0:
+            grid[j, k] = (None, np.zeros((3,)))
+
+      
+
       # save state_t, action, reward_t, to pool 
       self.state_pool[index] = s_t
       self.action_pool[index] = self.actions.index(action)
       self.reward_pool[index] = reward
       self.terminal_pool[index] = 0
+      self.aux_pool[index] = grid
+
       # if this moves us into terminal state, 
       # handle moving to fresh state for next call
       if self.doom_game.is_episode_finished():
@@ -127,6 +187,14 @@ class DQN():
     print "min_reward", min(rewards)
     self.frame += nframes
 
+      
+  def get_bb(buf, value):
+    y, x = np.where(buf == value)
+    x_min, x_max = np.min(x), np.max(x)
+    y_min, y_max = np.min(y), np.max(y)
+    return np.array(
+      [[x_min, y_min],
+       [x_max, y_max]]
 
   def train_batches(self, num_batches):
     j =  \
