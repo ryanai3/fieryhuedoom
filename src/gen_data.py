@@ -115,8 +115,9 @@ def run_and_save_episodes(game, num_episodes):
 
           xidx = find_idx(cell_x_min, 10)
           yidx = find_idx(cell_y_min, 8)
-
+          
           coords = np.array([xcenter, ycenter, math.sqrt(xmax - xmin), math.sqrt(ymax- ymin), z/ 60 - 1])
+          import pdb; pdb.set_trace()
           cur = grid[xidx, yidx]
           if cur == 0:
               classes = np.zeros((3,))
@@ -131,7 +132,7 @@ def run_and_save_episodes(game, num_episodes):
               if grid[j, k] == 0:
                   grid[j, k] = (None, np.zeros((3,)))
           
-      import pdb; pdb.set_trace()
+      
      
 
 

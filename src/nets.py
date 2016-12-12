@@ -3,6 +3,7 @@
 import chainer
 import chainer.functions as F
 import chainer.links as L
+import numpy as np
 from chainer import Variable
 
 def listify(x):
@@ -67,6 +68,10 @@ class YOLO(chainer.Chain):
     vec_len = self.num_grid_cells * outputs_per_grid_cell
     self.proposal_grid_shape = self.pgrid_dims + [outputs_per_grid_cell]
 
+    self.to_add = np.array([1, 1, 0, 0, 1])
+    self.to_mul = np.array([320, 240, 1, 1, 60])
+    self.to_mul2 = np.array([1, 1, 320, 240, 1])
+
     super(YOLO, self).__init__(
       features = YOLO_Feature_Stack(),
       fc1 = L.Linear(in_size=None, out_size=1024),
@@ -107,6 +112,13 @@ class YOLO(chainer.Chain):
       out = F.leaky_relu(fc(out))
     out = self.q(out)
     return out
+  
+  def scale_coords(self, c):
+    sc = (c + self.to_add) * self.to_mul
+    sc[2:4] = [max(sc[2], 1e-3), max(sc[3], 1e-3)]
+    sc[2:4] = sc[2:4]**2
+    sc = sc * self.to_mul2
+    return sc
 
   def reset_state(self):
 #    self.lstm.reset_state()
