@@ -29,7 +29,7 @@ class DQN():
     self.setup_game()
     print "game setup"
     self.action_q = self.target_q.copy()
-    self.prep_optimizer()
+    self.prep_optimizers()
     self.frame = 0
     self.object_id_map = {
       'MarineChainsaw': 0,
@@ -69,9 +69,10 @@ class DQN():
 #   self.games = [gd.setup_game() for i in range(self.num_par_games)]
     self.doom_game = gd.setup_game()
 
-  def prep_optimizer(self):
-    self.optimizer.setup(self.action_q)
-    self.optimizer.add_hook(chainer.optimizer.GradientClipping(self.gradient_clip))
+  def prep_optimizers(self):
+    self.optimizer_q.setup(self.action_q)
+    self.optimizer_q.add_hook(chainer.optimizer.GradientClipping(self.gradient_clip))
+    self.optimizer_yolo.setup(self.action_q)
 
   def randomize_action(self, best, random_probability):
     if rand() < self.epsilon:
@@ -110,17 +111,17 @@ class DQN():
 #      reward += (0.05 * delta_health) + (0.02 * delta_ammo)
       reward = r_t #+ delta_ammo * 0.02
 
-
-      unique_vals = np.unique(gs_t.labels_buffer)
+      labels_buf = gs_t.labels_buffer
+      unique_vals = np.unique(labels_buf)
       rects = []
       obj_ids = []
       zs = []
       for uv in unique_vals:
         for l in gs_t.labels:
           if l.value == uv:
-            rects.append(get_bb(labels_buf, uv))
+            rects.append(self.get_bb(labels_buf, uv))
             zs.append(np.mean(gs_t.depth_buffer[labels_buf == uv]))
-            obj_ids.append(object_id_map[l.object_name])
+            obj_ids.append(self.object_id_map[l.object_name])
             break
 
       numx = self.action_q.pgrid_dims[0]
@@ -138,29 +139,29 @@ class DQN():
         ymax = rect[1, 1] / 240.0 - 1
         ycenter = (ymin + ymax) / 2
 
-        cell_x_min = find_cell(xcenter, numx)
-        cell_y_min = find_cell(ycenter, numy)
+        cell_x_min = self.find_cell(xcenter, numx)
+        cell_y_min = self.find_cell(ycenter, numy)
         # care about center relative to box min
         xcenter -= cell_x_min
         ycenter -=cell_y_min
 
-        xidx = find_idx(cell_x_min, numx)
-        yidx = find_idx(cell_y_min, numy)
+        xidx = self.find_idx(cell_x_min, numx)
+        yidx = self.find_idx(cell_y_min, numy)
 
-        coords = np.array([xcenter, ycenter, math.sqrt(xmax - xmin), math.sqrt(ymax- ymin), z/ 60 - 1])
+        coords = np.array([xcenter, ycenter, math.sqrt(xmax - xmin), math.sqrt(ymax- ymin), z/ 60 - 1], dtype=np.float32)
         cur = grid[xidx, yidx]
         if cur == 0:
-          classes = np.zeros((3,))
+          classes = np.zeros((3,), dtype=np.float32)
           classes[obj_id] = 1
           grid[xidx, yidx] = (coords.reshape((1,5)), classes)
         else:
           cur[1][obj_id] += 1 
-          grid[xidx, yidx] = (np.vstack(cur[0], coords), cur[1])
+          grid[xidx, yidx] = (np.vstack((cur[0], coords)), cur[1])
 
       for j in range(numx):
         for k in range(numy):
           if grid[j, k] == 0:
-            grid[j, k] = (None, np.zeros((3,)))
+            grid[j, k] = (None, np.zeros((3,), dtype=np.float32))
 
       
 
@@ -193,51 +194,67 @@ class DQN():
     self.frame += nframes
 
      
-  def get_bb(buf, value):
+  def get_bb(self, buf, value):
     y, x = np.where(buf == value)
     x_min, x_max = np.min(x), np.max(x)
     y_min, y_max = np.min(y), np.max(y)
     return np.array(
       [[x_min, y_min],
        [x_max, y_max]]
+    )
 
-  def scale_coords(self, c):
+  def find_cell(self, x, y):
+    return math.floor(x * y/2) / (y/2)
+
+  def find_idx(self, x, y):
+    return x * (y/2) + (y/2)
+
+  def scale_coords(self, c, x_i, y_i):
     sc = (c + self.to_add) * self.to_mul
     sc[2:4] = [max(sc[2], 1e-3), max(sc[3], 1e-3)]
     sc[2:4] = sc[2:4]**2
     sc = sc * self.to_mul2
+    sc[0] = (c[0] - 320) + (64 * x_i)
+    sc[1] = (c[1] - 240) + (60 * y_i)
     return sc
 
-  def bb_loss(self, s_j, aux_j):
+  def bb_loss(self, proposals, aux_j):
     loss = Variable(self.xp.array(0.0).astype(self.xp.float32))
-    proposals = self.action_q.proposals(s_j)
+#    proposals = self.action_q.proposals(s_j)
     proposals_data = cuda.to_cpu(proposals.data)
     pgrid_dims = self.action_q.pgrid_dims
     bb_num = self.action_q.bb_num
     num_classes = self.action_q.num_classes
-    for batch in range(s_j.shape[0]):
+    batch_sum_iou = 0.0
+    n_obj = 0
+    errs = np.array([[0.0] for i in range(5)]).transpose()
+    cerrs = 0
+    for example in range(proposals.shape[0]):
       for x_i in range(self.action_q.pgrid_dims[0]):
         for y_i in range(self.action_q.pgrid_dims[1]):
-          cell_prop = proposals[batch, x_i, y_i, :]
-          cell_data = proposals_data[batch, x_i, y_i, :]
-          aux = aux_j[batch]
+          cell_prop = proposals[example, x_i, y_i, :]
+          cell_data = proposals_data[example, x_i, y_i, :]
+          aux = aux_j[example][x_i, y_i]
           if aux[0] == None: # No bounding boxes to predict
             for b in range(bb_num):
               loss += self.no_obj * (cell_prop[b * 7] ** 2)
             continue
           y_classes = aux[1]
           p_classes = cell_prop[-num_classes:]
+          p_classes_cpu = cell_data[-num_classes:]
           y_classes_gpu = Variable(self.xp.asarray(y_classes))
           loss += F.sum((y_classes_gpu - p_classes)**2)
+          cerrs += (p_classes_cpu - y_classes)**2
           y_obj_coords = aux[0]
           y_obj_coords_gpu = Variable(self.xp.asarray(y_obj_coords))
+          n_obj += y_obj_coords.shape[0]
           for obj_i in range(y_obj_coords.shape[0]):
-            y_coords = self.scale_coords(y_obj_coords[obj_i])
+            y_coords = self.scale_coords(y_obj_coords[obj_i], x_i, y_i)
             best_iou = 0
             best_index = -1
             best_rmse = 10000
             for b in range(bb_num):
-              p_coords = self.scale_coords(cell_data[b * 7 + 1:b * 7 + 6])
+              p_coords = self.scale_coords(cell_data[b * 7 + 1:b * 7 + 6], x_i, y_i)
               iou = box_iou(p_coords, y_coords)
               if best_iou > 0 or iou > 0:
                 if iou > best_iou:
@@ -248,12 +265,22 @@ class DQN():
                 if rmse < best_rmse:
                   best_index = b
                   best_rmse = rmse
+            batch_sum_iou += best_iou
+            print(best_iou)
             best_p_coords = cell_prop[best_index * 7 + 1: best_index * 7 + 6]
+#           best_p_coords = cell_prop[1:6]
+            p_coords = self.scale_coords(cell_data[best_index * 7 + 1:best_index * 7 + 6], x_i, y_i)
+            errs += np.abs(y_coords - p_coords)
+#            print y_coords
+#            print p_coords
             y_coords_gpu = y_obj_coords_gpu[obj_i]
             loss += self.coord * F.sum((best_p_coords - y_coords_gpu) ** 2)
+#            loss += (1 - cell_prop[0]) ** 2
             loss += (1 - cell_prop[best_index * 7]) ** 2
-    return loss
-
+#            print errs/max(n_obj, 1e-6)
+#            print n_obj
+    return (loss, batch_sum_iou/max(1, n_obj), errs/max(n_obj, 1e-6))
+ 
   def train_batches(self, num_batches):
     j =  \
       np.random.permutation(min(self.frame, self.pool_size - (self.train_term + 1)))[:self.batch_size] % self.pool_size
@@ -295,24 +322,32 @@ class DQN():
     j1 = j + 1
     s_j = (Variable(self.xp.asarray(self.state_pool[j].astype(np.float32)))/127.5) - 1
     s_j1 = (Variable(self.xp.asarray(self.state_pool[j + 1].astype(np.float32)))/127.5) - 1
-    Qhat = self.target_q(s_j1, train=False)
+    Qhat = self.target_q(s_j, train=False)
+#   Qhat = self.target_q(s_j1, train=False)
     max_Q = cuda.to_cpu(F.max(Qhat, axis=1).data)
-    bb_loss = self.bb_loss(s_j, self.aux_pool[j])
+#    import pdb; pdb.set_trace()
 #    max_Q = cuda.to_cpu(self.xp.max(Qhat.data, axis=1))
     y_j = Variable(self.xp.asarray(self.reward_pool[j] + (1 - self.terminal_pool[j]) * self.gamma * max_Q))
     a_j = Variable(self.xp.asarray(self.action_pool[j]))
-    qs = self.action_q(s_j)
+    
+    proposals, qs = self.action_q.proposals_and_q(s_j, train=True)
     q_preds = F.select_item(qs, a_j)
-    loss = F.mean_squared_error(y_j, q_preds)
-    loss = bb_loss
-    self.optimizer.zero_grads()
-    loss.backward()
-    loss.unchain_backward()
-    self.optimizer.update()
+    bb_loss, b_s_iou, errs = self.bb_loss(proposals, self.aux_pool[j])
+    q_loss = F.mean_squared_error(y_j, q_preds)
+#    import pdb; pdb.set_trace()
+    self.optimizer_yolo.zero_grads()
+    self.optimizer_q.zero_grads()
+    bb_loss.backward()
+    q_loss.backward()
+    self.optimizer_yolo.update()
+    self.optimizer_q.update()
+    
     qp_cpu = qs.data
 #    print "Q", np.mean(q_preds.data)
-    print "loss", loss.data
+#    print "loss", loss.data
+#    print "b_s_iou", b_s_iou
 #    print np.mean(qp_cpu, axis=0)
+    return bb_loss.data, np.mean(q_preds.data), b_s_iou, errs
 
   def run(self):
     self.run_episodes(self.pool_size)
@@ -327,7 +362,7 @@ class DQN():
 #          self.action_q = self.target_q.copy()
           self.target_q = self.action_q.copy()
           self.action_q.reset_state()
-        if b_i % self.batches_per_replay_update == 0:
+        if b_i % self.batches_per_replay_update == 0 and b_i != 0:
           print(b_i), "updating replay!"
           self.action_q.reset_state()
           self.run_episodes(self.frames_per_replay_update)
@@ -335,10 +370,17 @@ class DQN():
 #          self.action_q.reset_state()
   #        self.add_to_replay_buf(self.frames_per_replay_update)
 #        self.train_batches(self.train_term)
-        self.train_batch()
+        bb_loss, avg_q, b_s_iou, errs = self.train_batch()
+        if b_i % 10 == 0:
+          print(b_i)
+          for s, v in zip("x y w h z".split(), errs.transpose()):
+            print s + "_diff", v
+          print "b_s_iou", b_s_iou
+          print "bb_loss", bb_loss
+          print "avg_q", avg_q
       self.epsilon = self.epsilon * 0.98
       self.action_q.reset_state()
-      chainer.serializers.save_hdf5("/data/r9k/past_runs/fancy_dqn_{0}".format(epoch), self.action_q)
+      chainer.serializers.save_hdf5("/data/r9k/past_runs/tiny_yoloq3_{0}".format(epoch), self.action_q)
   
 import argparse
 from chainer_dqn_net import Q
@@ -355,31 +397,32 @@ if __name__ == "__main__":
     #         optimizer, gradient_clip
 
   params =  {
-    'gpu': 1,
-    'pool_size': 10, # x * 1000
+    'gpu': 0,
+    'pool_size': 4 * 1000, # x * 1000
     'epsilon': 0.2,
     'train_term': 1,
     'q_freeze_interval': 500,
     'num_epochs': 100,
     'gamma': 0.95,
-    'batch_size': 2,
-    'batches_per_epoch': 2500, #1000, #100,
+    'batch_size': 8,
+    'batches_per_epoch': 200, #1000, #100,
     # 150/min -> 1500 = 10 min, 15,000 = 1hr 40min, 
-    'batches_per_replay_update': 10,
-    'frames_per_replay_update': 100,
+    'batches_per_replay_update': 2500, #10,
+    'frames_per_replay_update': 4 * 1000,
     'height': 480,
     'width': 640,
     'channels': 3,
     'actions': [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
     'target_q': Q(width=640, height=480, channel=3, action_size=3),
-    'optimizer': optimizers.AdaGrad(lr = (10 ** -6)/16),
+    'optimizer_q': optimizers.AdaGrad(lr = (10 ** -6)/8),
     'gradient_clip': 0.01,
+    'optimizer_yolo': optimizers.AdaGrad(lr = 10 ** -2),
     # yolo params (hacky):
-    'no_obj': 0.5,
+    'no_obj': 4.0,
     'coord': 5.0,
   }
 
-  params['target_q'] = YOLO(**{'pgrid_dims': [10, 8], 'bb_num': 3, 'num_classes': 3, 'drop_prob': 0.5})
+  params['target_q'] = TinyYOLOQ(**{'pgrid_dims': [10, 8], 'bb_num': 3, 'num_classes': 3, 'drop_prob': 0.1})
   dqn = DQN(params)
 #  import pdb; pdb.set_trace()
   dqn.run()

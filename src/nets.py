@@ -124,6 +124,106 @@ class YOLO(chainer.Chain):
 #    self.lstm.reset_state()
     pass
 
+class TinyYOLOQ(chainer.Chain):
+  def __init__(self, **params):
+    self.__dict__.update(params)
+    
+    outputs_per_grid_cell = ((self.bb_num * 7) + self.num_classes)
+    num_grid_cells = self.pgrid_dims[0] * self.pgrid_dims[1]
+    vec_len = num_grid_cells * outputs_per_grid_cell
+    self.proposal_grid_shape = self.pgrid_dims + [outputs_per_grid_cell]
+
+    super(TinyYOLOQ, self).__init__(
+      block_1 = Conv_Pool_Block(
+        [(3, 3, 16, 1)],
+        [(2, 2, 2)]
+      ),
+      bn_1 = L.BatchNormalization(16),
+      block_2 = Conv_Pool_Block(
+        [(3, 3, 32, 1)],
+        [(2, 2, 2)]
+      ),
+      bn_2 = L.BatchNormalization(32),
+      block_3 = Conv_Pool_Block(
+        [(3, 3, 64, 1)],
+        [(2, 2, 2)]
+      ),
+      bn_3 = L.BatchNormalization(64),
+      block_4 = Conv_Pool_Block(
+        [(3, 3, 128, 1)],
+        [(2, 2, 2)]
+      ),
+      bn_4 = L.BatchNormalization(128),
+      block_5 = Conv_Pool_Block(
+        [(3, 3, 256, 1)],
+        [(2, 2, 2)]
+      ),
+      bn_5 = L.BatchNormalization(256),
+      block_6 = Conv_Pool_Block(
+        [(3, 3, 512, 1)],
+        [(2, 2, 1)]
+      ),
+      bn_6 = L.BatchNormalization(512),
+      block_7 = Conv_Block(
+        [(3, 3, 1024, 1)]
+      ),
+      bn_7 = L.BatchNormalization(1024),
+      block_8 = Conv_Block(
+        [(3, 3, 1024, 1)]
+      ),
+      bn_8 = L.BatchNormalization(1024),
+      block_9 = Conv_Block(
+        [(1, 1, 512, 1)]
+      ),
+      fc1 = L.Linear(in_size=None, out_size=1024),
+      fc_p = L.Linear(in_size=1024, out_size=vec_len),
+      fcq1 = L.Linear(in_size=vec_len + 1024, out_size=256),
+      q    = L.Linear(in_size=256, out_size=3)
+   )
+    self.fcq1.W.unchain_backward()
+
+  def reset_state(self):
+    pass
+
+  def proposals_unr(self, x, train=True):
+    out = self.features(x)
+    out = self.fc1(out)
+    out = F.dropout(out, self.drop_prob)
+    pre_prop = F.leaky_relu(out)
+    out = self.fc_p(pre_prop)
+    return out, pre_prop
+
+  def proposals(self, x, train=True):
+    proposals, _ = self.proposals_unr(x, train)
+    proposals = F.reshape(proposals, [x.shape[0]] + self.proposal_grid_shape)
+    return proposals
+
+  def proposals_and_q(self, x, train=True):
+    proposals, pre_prop = self.proposals_unr(x, train)
+    out = proposals
+    out = F.leaky_relu(self.fcq1(F.concat((out, pre_prop))))
+    out = self.q(out)
+    proposals_resh = F.reshape(proposals, [x.shape[0]] + self.proposal_grid_shape)
+    return proposals_resh, out
+
+  def __call__(self, x, train=True):
+    out, pre_prop = self.proposals_unr(x, train)
+    out = F.leaky_relu(self.fcq1(F.concat((out, pre_prop))))
+    out = self.q(out)
+    return out
+
+  def features(self, x, train=True):
+    out = self.bn_1(self.block_1(x))
+    out = self.bn_2(self.block_2(out))
+    out = self.bn_3(self.block_3(out))
+    out = self.bn_4(self.block_4(out))
+    out = self.bn_5(self.block_5(out))
+    out = self.bn_6(self.block_6(out))
+    out = self.bn_7(self.block_7(out))
+    out = self.bn_8(self.block_8(out))
+    out = self.block_9(out)
+    return out
+
 class TinyYOLO(chainer.Chain):
   def __init__(self, **params):
     self.__dict__.update(params)
